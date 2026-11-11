@@ -1,0 +1,116 @@
+﻿<?xml version="1.0" encoding="utf-8" ?>
+<ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+             xmlns:vm="clr-namespace:SlowEnglishFmApp.ViewModels"
+             xmlns:converters="clr-namespace:SlowEnglishFmApp.Converters"
+             x:Class="SlowEnglishFmApp.MainPage"
+             BackgroundColor="#0E1116"
+             Shell.NavBarIsVisible="False">
+
+    <ContentPage.Resources>
+        <converters:StringNotEmptyConverter x:Key="StringNotEmptyConverter" />
+
+        <Style x:Key="KaraokeLabel" TargetType="Label">
+            <Setter Property="TextColor" Value="#F5F7FA" />
+            <Setter Property="FontSize" Value="40" />
+            <Setter Property="FontFamily" Value="OpenSansRegular" />
+            <Setter Property="LineHeight" Value="1.25" />
+            <Setter Property="Margin" Value="6,4" />
+            <Setter Property="Padding" Value="10,4" />
+            <Setter Property="HorizontalTextAlignment" Value="Center" />
+        </Style>
+    </ContentPage.Resources>
+
+    <Grid x:Name="RootGrid" RowDefinitions="Auto, *, Auto" ColumnDefinitions="*">
+
+        <!-- 顶部：台标 + 当前节目 + 在线人数 -->
+        <Grid Grid.Row="0" Padding="24,18,24,8" ColumnDefinitions="*,Auto" RowDefinitions="Auto,Auto,Auto">
+            <HorizontalStackLayout Grid.Column="0" Spacing="14" VerticalOptions="Center">
+                <Border Padding="10,4" StrokeShape="RoundRectangle 8" BackgroundColor="#B00020" Stroke="Transparent">
+                    <HorizontalStackLayout Spacing="8">
+                        <Ellipse WidthRequest="10" HeightRequest="10" Fill="#FF5252" />
+                        <Label Text="ON AIR" TextColor="White" FontSize="16" FontAttributes="Bold" />
+                    </HorizontalStackLayout>
+                </Border>
+                <Label Text="{Binding Listeners, StringFormat='&#128266; {0}'}"
+                       TextColor="#9AA4B2" FontSize="16" VerticalOptions="Center" />
+            </HorizontalStackLayout>
+
+            <VerticalStackLayout Grid.Column="0" Grid.Row="1" Spacing="2" Margin="0,12,0,0">
+                <Label Text="{Binding ProgrammeTitle}"
+                       TextColor="White" FontSize="30" FontAttributes="Bold"
+                       LineBreakMode="WordWrap" MaxLines="2" />
+                <Label Text="{Binding NextTitle, StringFormat='接下来：{0}'}"
+                       TextColor="#7E8794" FontSize="16"
+                       IsVisible="{Binding NextTitle, Converter={StaticResource StringNotEmptyConverter}}" />
+            </VerticalStackLayout>
+        </Grid>
+
+        <!-- 中部：卡拉OK 字幕 -->
+        <Border Grid.Row="1" Margin="16,4" StrokeShape="RoundRectangle 16"
+                Stroke="#1C2530" BackgroundColor="#141A21" Padding="20">
+            <ScrollView x:Name="SubtitleScroll">
+                <FlexLayout x:Name="WordsHost"
+                            BindableLayout.ItemsSource="{Binding CurrentTurnWords}"
+                            Wrap="Wrap" JustifyContent="Center" AlignItems="Center">
+                    <BindableLayout.ItemTemplate>
+                        <DataTemplate x:DataType="vm:KaraokeWord">
+                            <Label Style="{StaticResource KaraokeLabel}" Text="{Binding Text}">
+                                <Label.Triggers>
+                                    <DataTrigger TargetType="Label" Binding="{Binding IsPast}" Value="True">
+                                        <Setter Property="TextColor" Value="#5B6675" />
+                                    </DataTrigger>
+                                    <DataTrigger TargetType="Label" Binding="{Binding IsActive}" Value="True">
+                                        <Setter Property="TextColor" Value="#0E1116" />
+                                        <Setter Property="BackgroundColor" Value="#FFC83D" />
+                                        <Setter Property="FontAttributes" Value="Bold" />
+                                        <Setter Property="FontSize" Value="48" />
+                                        <Setter Property="Margin" Value="6,2" />
+                                    </DataTrigger>
+                                </Label.Triggers>
+                            </Label>
+                        </DataTemplate>
+                    </BindableLayout.ItemTemplate>
+                </FlexLayout>
+            </ScrollView>
+        </Border>
+
+        <!-- 底部：状态 / 播放控制 / 音量 / 字幕同步 -->
+        <Grid Grid.Row="2" Padding="24,10,24,24" RowDefinitions="Auto,Auto,Auto,Auto" ColumnDefinitions="*">
+            <Label Grid.Row="0" Text="{Binding StatusMessage}"
+                   TextColor="#9AA4B2" FontSize="16" HorizontalTextAlignment="Center"
+                   IsVisible="{Binding StatusMessage, Converter={StaticResource StringNotEmptyConverter}}" />
+
+            <Button Grid.Row="1" Command="{Binding TogglePlayCommand}"
+                    FontSize="28" FontAttributes="Bold"
+                    HeightRequest="84" CornerRadius="42" Margin="0,6"
+                    BackgroundColor="#1F6FEB" TextColor="White">
+                <Button.Triggers>
+                    <DataTrigger TargetType="Button" Binding="{Binding IsPlaying}" Value="False">
+                        <Setter Property="Text" Value="&#9654;  播放" />
+                    </DataTrigger>
+                    <DataTrigger TargetType="Button" Binding="{Binding IsPlaying}" Value="True">
+                        <Setter Property="Text" Value="&#9208;  暂停" />
+                    </DataTrigger>
+                </Button.Triggers>
+            </Button>
+
+            <Grid Grid.Row="2" ColumnDefinitions="Auto,*,Auto" ColumnSpacing="16" VerticalOptions="Center" Margin="0,4,0,0">
+                <Label Grid.Column="0" Text="&#128266; 音量" TextColor="#9AA4B2" FontSize="16" VerticalOptions="Center" />
+                <Slider Grid.Column="1" Minimum="0" Maximum="1" Value="{Binding Volume}" VerticalOptions="Center" />
+                <Label Grid.Column="2" Text="{Binding Volume, StringFormat='{0:P0}'}"
+                       TextColor="#9AA4B2" FontSize="16" VerticalOptions="Center" WidthRequest="56" />
+            </Grid>
+
+            <HorizontalStackLayout Grid.Row="3" HorizontalOptions="Center" VerticalOptions="Center" Spacing="10" Margin="0,10,0,0">
+                <Label Text="字幕同步" TextColor="#7E8794" FontSize="14" VerticalOptions="Center" />
+                <Button Text="&#8722;0.5s" Command="{Binding NudgeOffsetCommand}" CommandParameter="-0.5"
+                        FontSize="14" HeightRequest="40" WidthRequest="84" BackgroundColor="#2A3340" TextColor="White" />
+                <Label Text="{Binding SubtitleOffsetSeconds, StringFormat='{0:+0.0;-0.0;0.0}s'}"
+                       TextColor="#FFC83D" FontSize="16" VerticalOptions="Center" WidthRequest="64" HorizontalTextAlignment="Center" />
+                <Button Text="+0.5s" Command="{Binding NudgeOffsetCommand}" CommandParameter="0.5"
+                        FontSize="14" HeightRequest="40" WidthRequest="84" BackgroundColor="#2A3340" TextColor="White" />
+            </HorizontalStackLayout>
+        </Grid>
+    </Grid>
+</ContentPage>
