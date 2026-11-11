@@ -41,8 +41,19 @@
                         <Label x:Name="OnAirLabel" Text="ON AIR" TextColor="White" FontSize="16" FontAttributes="Bold" />
                     </HorizontalStackLayout>
                 </Border>
-                <Label x:Name="ListenersLabel" Text="{Binding Listeners, StringFormat='&#128266; {0}'}"
-                       TextColor="#9AA4B2" FontSize="16" VerticalOptions="Center" />
+                <HorizontalStackLayout x:Name="ListenersPanel" Spacing="6" VerticalOptions="Center">
+                    <!--
+                        「在线听众」图标：自绘的单色人形剪影（头 + 肩）。
+                        原来用的是 🔊 emoji——语义是「音频/音量」，且 Android 会渲染成彩色 emoji，
+                        各设备样式不一致；自绘图形颜色可跟随主题、也不受字体影响。
+                    -->
+                    <VerticalStackLayout x:Name="ListenersIcon" Spacing="1" VerticalOptions="Center">
+                        <Ellipse WidthRequest="7" HeightRequest="7" Fill="#9AA4B2" HorizontalOptions="Center" />
+                        <Path Data="M0,8 A8,8 0 0 1 16,8 Z" Fill="#9AA4B2" HorizontalOptions="Center" />
+                    </VerticalStackLayout>
+                    <Label x:Name="ListenersLabel" Text="{Binding Listeners}"
+                           TextColor="#9AA4B2" FontSize="16" VerticalOptions="Center" />
+                </HorizontalStackLayout>
             </HorizontalStackLayout>
 
             <VerticalStackLayout x:Name="TitlePanel" Grid.Column="0" Grid.Row="1" Spacing="2" Margin="0,12,0,0">

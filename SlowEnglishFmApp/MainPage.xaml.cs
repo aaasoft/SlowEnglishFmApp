@@ -86,6 +86,7 @@ public partial class MainPage : ContentPage
             OnAirBadge.Padding = new Thickness(8, 2);
             OnAirLabel.FontSize = 12;
             ListenersLabel.FontSize = 12;
+            ListenersIcon.Scale = 0.8;
             TitlePanel.Margin = new Thickness(0, 6, 0, 0);
             ProgrammeLabel.FontSize = 20;
             ProgrammeLabel.MaxLines = 1;
@@ -108,6 +109,7 @@ public partial class MainPage : ContentPage
             OnAirBadge.Padding = new Thickness(10, 4);
             OnAirLabel.FontSize = 16;
             ListenersLabel.FontSize = 16;
+            ListenersIcon.Scale = 1.0;
             TitlePanel.Margin = new Thickness(0, 12, 0, 0);
             ProgrammeLabel.FontSize = 30;
             ProgrammeLabel.MaxLines = 2;
