@@ -4,6 +4,7 @@ using CommunityToolkit.Maui.Core;
 using CommunityToolkit.Maui.Views;
 using Microsoft.Maui;
 using Microsoft.Maui.Devices;
+using Microsoft.Maui.Dispatching;   // IDispatcher.DispatchDelayed
 using SlowEnglishFmApp.ViewModels;
 
 namespace SlowEnglishFmApp;
@@ -20,6 +21,9 @@ public partial class MainPage : ContentPage
     private bool _turnResetPending;   // 刚换句，需要先把滚动位置归零
     private bool _stopping;           // 正在停止，防止 Stop 事件重入
     private int _attemptId;           // 播放请求序号：每次播放/停止 +1，用于作废过期的兜底检查
+    private bool _hasPlayed;          // 本次会话是否真正到达过 Playing（区分「外部暂停」与「Play() 被吞」）
+    private bool _sourceStale;        // 播放器里留着的是「停止后遗留的旧连接」，被外部拉起来时要换新源
+    private const int ExternalPauseConfirmMs = 600;  // 外部暂停确认窗口：期间恢复 Playing 则不算停止
 
     // 布局模式：null = 尚未确定；true = 横屏紧凑，false = 竖屏常规
     private bool? _compact;
@@ -198,6 +202,8 @@ public partial class MainPage : ContentPage
                 // 复用同一个 id 会让 /api/live-clock 校准到上一个连接的时刻。
                 // 元数据必须在赋 Source 之前设置：Android 侧只在设置源时读取一次，
                 // 否则通知栏会一直显示应用名而看不到正在播的节目。
+                _hasPlayed = false;   // 新会话：还没真正播过，此时出现的 Paused 只是「Play() 被吞」
+                _sourceStale = false; // 已经是新连接了，不再需要「换源重建」
                 _player.MetadataTitle = _vm.ProgrammeTitle;
                 _player.MetadataArtist = "Slow English FM · 实时直播";
                 _player.Source = MediaSource.FromUri(new Uri(_vm.BeginNewConnection()));
@@ -243,9 +249,11 @@ public partial class MainPage : ContentPage
     }
 
     /// <summary>
-    /// 停止播放并断开直播流（不是暂停）。
-    /// 暂停会让 MediaElement 保留连接，恢复时 Position 语义不确定，字幕容易停住；
-    /// 停止后把 Source 置空，下次播放重新建立连接并重新校准时钟。
+    /// 停止播放（不是暂停）。
+    /// 「停止」在业务上的含义是：作废这一场播放会话 —— 立即静音、清空字幕、时钟映射全部重置、
+    /// 界面回到可重新播放的状态。底层把播放器留在 Paused（而不是 Stop 后的 IDLE），
+    /// 是为了让通知栏/锁屏卡片的播放键仍然可用；一旦它被按下，TryRestartStaleSource()
+    /// 会用新的 connection id 重开一条流并重新校准时钟。
     /// </summary>
     private void StopPlayback()
     {
@@ -254,17 +262,27 @@ public partial class MainPage : ContentPage
         try
         {
             _playbackBegun = false;
+            _hasPlayed = false;
 
             try
             {
-                _player.Stop();
-                _player.Source = null;
+                // 底层用 Pause 而不是 Stop：两件事必须同时成立 ——
+                // 1. 立即静音、停止推进播放位置（Stop 也能做到）；
+                // 2. 播放器要停在「可恢复」的状态，通知栏/锁屏卡片的播放键才有意义。
+                //    Stop 会把播放器打到 IDLE，此时只收到一个 Play 请求却不会重新 prepare，
+                //    表现就是「点通知栏播放没有任何反应」；Paused 是播放器唯一能直接恢复的状态。
+                // 停止语义由上面/下面的状态复位（清字幕、作废旧连接、时钟重新校准）保证，不靠 Stop。
+                _player.Pause();
             }
             catch
             {
-                // 某些状态下 Stop/清空 Source 可能抛错，忽略：_playbackBegun 已复位，
+                // 某些状态下 Pause 可能抛错，忽略：_playbackBegun 已复位，
                 // 下次播放会重新赋一个新的 Source 覆盖掉。
             }
+
+            // 保留下来的是「上一场的旧连接」：若用户从通知栏点播放把它拉起来，
+            // 那个 connection id 已废弃、拿不到时钟校准，必须换新连接重来（见 OnMediaStateChanged）。
+            _sourceStale = true;
 
             DeviceDisplay.Current.KeepScreenOn = false;
             _vm.NotifyPlaybackStopped();
@@ -277,6 +295,12 @@ public partial class MainPage : ContentPage
 
     private void OnMediaOpened(object? sender, EventArgs e)
     {
+        // MediaOpened 通常先于 Playing 到达。停止后从通知栏恢复播放时，
+        // 这里会先看到「旧连接重新打开」——必须在这里就接管，否则会先把
+        // _playbackBegun 置真并调用 NotifyPlaybackStarted，Playing 到来时就
+        // 认不出这是废弃连接，字幕会拿不到校准。
+        if (TryRestartStaleSource()) return;
+
         if (!_playbackBegun)
         {
             _playbackBegun = true;
@@ -294,8 +318,10 @@ public partial class MainPage : ContentPage
         switch (_player.CurrentState)
         {
             case MediaElementState.Playing:
+                _hasPlayed = true;
                 if (!_playbackBegun)
                 {
+                    if (TryRestartStaleSource()) break;
                     _playbackBegun = true;
                     _vm.NotifyPlaybackStarted();
                 }
@@ -306,9 +332,12 @@ public partial class MainPage : ContentPage
                 break;
 
             case MediaElementState.Paused:
-                // 用户界面上已没有「暂停」，这只可能是系统/音频焦点导致的暂停：
-                // 停住计时即可，不要改变用户的播放意图。
+                // 用户界面上已没有「暂停」，这里只可能是外部发起的暂停：
+                // 通知栏/锁屏媒体卡片的暂停键、耳机线控，或音频焦点被其他应用抢走。
+                // 先停住本地计时，再判断是否把这次暂停「升级」为停止（见 ConfirmExternalPause）。
                 _vm.NotifyPlaybackPaused();
+                if (_hasPlayed && !_stopping && _vm.IsPlaying)
+                    ConfirmExternalPause();
                 break;
 
             // Stopped 不在这里处理：切换 Source、Stop() 都会触发它，
@@ -317,9 +346,64 @@ public partial class MainPage : ContentPage
         }
     }
 
+    /// <summary>
+    /// 「停止」保留了媒体项（否则通知栏的播放键没有东西可播），所以外部按播放时，
+    /// 播放器会真的把那条**已废弃的旧连接**拉起来。这里在第一次看到它打开/开始播放时接管，
+    /// 把播放意图交回正常开播流程（新 connection id + 重新校准时钟）。
+    ///
+    /// 为什么必须换源：旧 connection id 在停止时就作废了，`/api/live-clock` 不会再为它
+    /// 返回 `programmeAt`，校准失败后字幕只能退回墙钟兜底，整体会偏快十几秒。
+    /// </summary>
+    /// <returns>true 表示已接管，调用方不要再按「正常开始播放」处理。</returns>
+    private bool TryRestartStaleSource()
+    {
+        if (!_sourceStale || _stopping) return false;
+        _sourceStale = false;
+
+        // 不能在播放器状态回调里同步改 Source（会打断播放器内部的状态机），推到下一轮消息循环。
+        // IsPlaying=true 会触发 HandlePlayState(true)：换新源 + Play + 兜底补播。
+        Dispatcher.Dispatch(() =>
+        {
+            try { _vm.IsPlaying = true; } catch { /* 页面已销毁 */ }
+        });
+
+        return true;
+    }
+
+    /// <summary>
+    /// 把「外部发起的暂停」（通知栏 / 锁屏媒体卡片 / 耳机线控）升级为与 App 内「停止」完全等价的动作。
+    ///
+    /// 为什么需要这个：直播流不提供暂停/续播的语义，MediaElement 进入 Paused 后会保留连接、
+    /// Position 停在原处，字幕时间基准随之冻住；再恢复播放时 Position 语义也不可靠
+    /// （之前「暂停后字幕不动」的根因）。所以用户从通知栏暂停时，直接按停止处理：
+    /// 断流、清空字幕、按钮回到「播放」，下次开播是新连接并重新校准。
+    ///
+    /// 两个判据避免误伤：
+    /// 1. `_hasPlayed`：本次会话必须真正到达过 Playing。快速「停止→播放」时 Play() 可能被吞，
+    ///    播放器会短暂停在 Paused 却从未播过 —— 那种情况必须留给 EnsurePlayingAsync 补播，
+    ///    在这里停止会让补救逻辑永远失效。
+    /// 2. 确认窗口：音频焦点被导航播报等短暂抢占时也会 Paused，若窗口内自行恢复 Playing 就不停止。
+    /// </summary>
+    private void ConfirmExternalPause()
+    {
+        int attempt = _attemptId;
+
+        Dispatcher.DispatchDelayed(TimeSpan.FromMilliseconds(ExternalPauseConfirmMs), () =>
+        {
+            if (attempt != _attemptId) return;                    // 期间用户又点了播放/停止
+            if (_stopping || !_vm.IsPlaying) return;               // 已经被别的路径停掉了
+            if (_player.CurrentState != MediaElementState.Paused) return;  // 已自行恢复播放
+
+            // 与点 App 内「停止」走完全相同的路径：IsPlaying=false → HandlePlayState(false) → StopPlayback()。
+            _vm.IsPlaying = false;
+        });
+    }
+
     private void OnMediaFailed(object? sender, MediaFailedEventArgs e)
     {
         _playbackBegun = false;
+        _hasPlayed = false;
+        _sourceStale = true;   // 失败的源不可复用，外部再拉起时换新连接
         DeviceDisplay.Current.KeepScreenOn = false;
         _vm.NotifyPlaybackFailed(e.ErrorMessage ?? "未知错误");
     }
