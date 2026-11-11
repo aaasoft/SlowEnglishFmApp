@@ -61,6 +61,7 @@ public class RadioViewModel : INotifyPropertyChanged, IDisposable
     private IReadOnlyList<WordTiming>? _words;
     /// <summary>当前显示的这一句（turn）包含的词，按顺序排列；用于把“当前词”换算成句中位置。</summary>
     private List<WordTiming>? _turnWords;
+    private ObservableCollection<KaraokeWord> _currentTurnWords = new();
     private int _currentTurn = -1;
     private string? _anchoredEntryId;
 
@@ -75,7 +76,8 @@ public class RadioViewModel : INotifyPropertyChanged, IDisposable
     private TimeSpan _positionZero;             // 映射零点（播放进度侧）
     private DateTimeOffset _programmeAtZero = DateTimeOffset.UtcNow; // 映射零点（节目时刻侧）
     private bool _clockCalibrated;
-    private static readonly string _connectionId = Guid.NewGuid().ToString("N");
+    /// <summary>直播连接 id：流地址与 /api/live-clock 必须用同一个。每次重新连接都会换成新的。</summary>
+    private string _connectionId = Guid.NewGuid().ToString("N");
     private CancellationTokenSource? _calCts;
     private bool _recalibrateNow;
 
@@ -99,8 +101,6 @@ public class RadioViewModel : INotifyPropertyChanged, IDisposable
         TogglePlayCommand = new Command(TogglePlay);
         NudgeOffsetCommand = new Command<double>(NudgeOffset);
 
-        CurrentTurnWords = new ObservableCollection<KaraokeWord>();
-
         _live.CurrentChanged += OnCurrentChanged;
         _live.Error += OnLiveError;
 
@@ -115,15 +115,40 @@ public class RadioViewModel : INotifyPropertyChanged, IDisposable
         _live.Start();
     }
 
-    public ObservableCollection<KaraokeWord> CurrentTurnWords { get; }
+    /// <summary>
+    /// 当前句要显示的词。整句替换而非逐个增删：换句时只触发一次 ItemsSource 变化，
+    /// BindableLayout 一次性重建子视图，避免「Clear + N 次 Add」造成的多次布局与卡顿。
+    /// </summary>
+    public ObservableCollection<KaraokeWord> CurrentTurnWords
+    {
+        get => _currentTurnWords;
+        private set => Set(ref _currentTurnWords, value);
+    }
 
     public Command TogglePlayCommand { get; }
     public Command<double> NudgeOffsetCommand { get; }
 
-    /// <summary>实时音频流地址（带连接 id）。页面首次播放时把它设为 MediaElement 的源；
-    /// 同一 connection id 也会用于 /api/live-clock 校准字幕，必须保持一致。</summary>
-    public string StreamUrl { get; } =
-        $"https://slowenglish.fm/live.mp3?connection={_connectionId}";
+    /// <summary>实时音频流地址（带当前连接 id）。页面每次（重新）开始播放时把它设为 MediaElement 的源。</summary>
+    public string StreamUrl
+    {
+        get { lock (_clockGate) return $"https://slowenglish.fm/live.mp3?connection={_connectionId}"; }
+    }
+
+    private string ConnectionId
+    {
+        get { lock (_clockGate) return _connectionId; }
+    }
+
+    /// <summary>
+    /// 建立一条新的直播连接（换新的连接 id）并返回新的流地址。
+    /// 每次点击播放都要调用：旧的连接在停止时已废弃，复用同一个 id 会让
+    /// /api/live-clock 返回上一个连接的状态，校准结果不可信。
+    /// </summary>
+    public string BeginNewConnection()
+    {
+        lock (_clockGate) _connectionId = Guid.NewGuid().ToString("N");
+        return StreamUrl;
+    }
 
     public bool IsPlaying
     {
@@ -241,6 +266,35 @@ public class RadioViewModel : INotifyPropertyChanged, IDisposable
         _sw.Stop();
     }
 
+    /// <summary>
+    /// 页面在「停止」播放后调用：断流后所有时间映射都失效，必须整体重置，
+    /// 否则下次播放（新连接、Position 从 0 重新开始）会沿用旧映射，导致字幕错位甚至不再推进。
+    /// </summary>
+    public void NotifyPlaybackStopped()
+    {
+        IsPlaying = false;
+        _sw.Reset();
+
+        lock (_clockGate)
+        {
+            _position = TimeSpan.Zero;
+            _positionReliable = false;
+            _positionZero = TimeSpan.Zero;
+            _programmeAtZero = DateTimeOffset.UtcNow;
+            _clockCalibrated = false; // 下次播放是全新连接，必须重新校准
+            _recalibrateNow = false;
+        }
+
+        _anchoredEntryId = null;
+        _words = null;
+        _currentTurn = -1;
+        _lastActiveIndex = -1;
+        ActiveWordIndex = -1;
+        ShowKaraoke = false;
+        ClearTurnWords();
+        StatusMessage = "已停止 · 点击播放重新收听";
+    }
+
     /// <summary>页面在 MediaElement 播放失败时调用。</summary>
     public void NotifyPlaybackFailed(string message)
     {
@@ -269,10 +323,11 @@ public class RadioViewModel : INotifyPropertyChanged, IDisposable
 
             TimeSpan oldProgress = _positionReliable ? _position : _sw.Elapsed;
 
-            // 首次拿到真实进度、或进度大幅回退（流重连）都属于“断点”，
-            // 平移零点以保持节目时刻连续，避免字幕跳变。
+            // 首次拿到真实进度、或进度大幅跳变（流重连：回退到更早，直接跳到新的直播边缘）
+            // 都属于“断点”，平移零点以保持节目时刻连续，避免字幕跳变或停住。
             bool discontinuity = !_positionReliable
-                                 || oldProgress - position > TimeSpan.FromSeconds(2);
+                                 || oldProgress - position > TimeSpan.FromSeconds(2)   // 回退
+                                 || position - oldProgress > TimeSpan.FromSeconds(5);  // 前跳
 
             _position = position;
             if (!discontinuity) return;
@@ -457,7 +512,7 @@ public class RadioViewModel : INotifyPropertyChanged, IDisposable
 
             // 用“请求发出瞬间的播放进度”与 programmeAt 配对，误差最小。
             var progressAtRequest = ProgressNow();
-            var programmeAt = await _live.GetProgrammeAtAsync(_connectionId).ConfigureAwait(false);
+            var programmeAt = await _live.GetProgrammeAtAsync(ConnectionId).ConfigureAwait(false);
             if (ct.IsCancellationRequested) break;
 
             if (programmeAt.HasValue)
@@ -571,10 +626,13 @@ public class RadioViewModel : INotifyPropertyChanged, IDisposable
 
     private void RebuildTurn(int turn)
     {
-        ClearTurnWords();
         _turnWords = _words!.Where(w => w.Turn == turn).ToList();
-        foreach (var w in _turnWords)
-            CurrentTurnWords.Add(new KaraokeWord { Text = w.Text });
+
+        // 一次性替换整句集合（而不是逐个 Add）：BindableLayout 只重建一次子视图，
+        // 换句时不会因为「先清空、再一个个加」而产生多次布局与闪烁。
+        var items = new ObservableCollection<KaraokeWord>(
+            _turnWords.Select(w => new KaraokeWord { Text = w.Text }));
+        CurrentTurnWords = items;
     }
 
     /// <summary>当前词在本句中的位置（0 起）；不属于本句时返回 -1。</summary>
@@ -592,7 +650,7 @@ public class RadioViewModel : INotifyPropertyChanged, IDisposable
     {
         _turnWords = null;
         if (CurrentTurnWords.Count > 0)
-            CurrentTurnWords.Clear();
+            CurrentTurnWords = new ObservableCollection<KaraokeWord>();
     }
 
     // ---- INotifyPropertyChanged ----
