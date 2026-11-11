@@ -42,6 +42,12 @@ public partial class MainPage : ContentPage
             Volume = 1.0,   // 音量固定为原始响度，由系统音量键调节
         };
         _player.BindingContext = _vm;
+
+        // 系统通知栏 / 锁屏媒体卡片的标题来自这里。注意 Android 实现是「设置 Source 时读取元数据」，
+        // 所以元数据必须在赋 Source 之前写好（见 HandlePlayState），运行中再改不会刷新通知。
+        _player.MetadataTitle = _vm.ProgrammeTitle;
+        _player.MetadataArtist = "Slow English FM · 实时直播";
+
         _player.MediaOpened += OnMediaOpened;
         _player.StateChanged += OnMediaStateChanged;
         _player.MediaFailed += OnMediaFailed;
@@ -144,6 +150,12 @@ public partial class MainPage : ContentPage
             HandleTurnRebuilt();
         else if (e.PropertyName == nameof(RadioViewModel.ActiveWordIndex))
             _ = ScrollToActiveWordAsync();
+        else if (e.PropertyName == nameof(RadioViewModel.ProgrammeTitle))
+        {
+            // 节目信息来自后台轮询线程，改 BindableProperty 必须回到主线程。
+            string title = _vm.ProgrammeTitle;
+            MainThread.BeginInvokeOnMainThread(() => _player.MetadataTitle = title);
+        }
     }
 
     /// <summary>
@@ -184,6 +196,10 @@ public partial class MainPage : ContentPage
             {
                 // 每次开始播放都换一个新的连接 id：停止时旧连接已废弃，
                 // 复用同一个 id 会让 /api/live-clock 校准到上一个连接的时刻。
+                // 元数据必须在赋 Source 之前设置：Android 侧只在设置源时读取一次，
+                // 否则通知栏会一直显示应用名而看不到正在播的节目。
+                _player.MetadataTitle = _vm.ProgrammeTitle;
+                _player.MetadataArtist = "Slow English FM · 实时直播";
                 _player.Source = MediaSource.FromUri(new Uri(_vm.BeginNewConnection()));
             }
             _player.Play();
