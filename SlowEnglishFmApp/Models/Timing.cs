@@ -2,7 +2,7 @@ namespace SlowEnglishFmApp.Models;
 
 /// <summary>
 /// 单句（turn）中的单个词，带起止时间，用于卡拉OK式逐词高亮。
-/// 对应 https://media.slowenglish.fm/radio/{runId}/{kind}/timings.json 中的 words[] 元素。
+/// 对应 https://slowenglish.fm/timings/runs/{runId}/{kind}/word-timings.json 中的 words[] 元素。
 /// </summary>
 public class WordTiming
 {

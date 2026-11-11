@@ -4,7 +4,7 @@ namespace SlowEnglishFmApp.Services;
 
 /// <summary>
 /// 字幕计时服务：按 runId + kind 获取逐词计时 JSON 并做内存缓存。
-/// 地址规则：https://media.slowenglish.fm/radio/{runId}/{kind}/timings.json
+/// 地址规则：https://slowenglish.fm/timings/runs/{runId}/{kind}/word-timings.json
 /// </summary>
 public interface ITimingsService
 {

@@ -45,11 +45,13 @@ https://slowenglish.fm/live.mp3?connection=<随机连接ID>
 - 必须使用**正在拉流的同一个 connection ID**；否则返回 `{"error":"Connection not ready"}`。
 - 这是字幕与音频对齐的基准，已包含直播流的服务端缓冲延迟。
 
-### 3. 逐词字幕计时 — `GET https://media.slowenglish.fm/radio/{runId}/{kind}/timings.json`
+### 3. 逐词字幕计时 — `GET https://slowenglish.fm/timings/runs/{runId}/{kind}/word-timings.json`
 返回：
 ```json
 { "words": [ { "turn": 0, "index": 0, "text": "Welcome", "start": 0.28, "end": 0.88 } ], "quality": {...} }
 ```
+- 路径规则来自 `/api/state` 中 episode 的 `wordTimings` 字段（或由 `audio` 把文件名换成 `word-timings.json`），即 `runs/{runId}/{kind}/word-timings.json`，前缀为 `https://slowenglish.fm/timings/`。
+- 旧的 `https://media.slowenglish.fm/radio/{runId}/{kind}/timings.json` **只对部分节目存在**（`flash`/`brief`/`day_recap`/`show` 等多类会 404），已弃用。
 - `words[]` 即卡拉OK字幕源：`turn`=句子序号，`index`=句中词序，`start`/`end`=相对节目开始的发音起止秒数。
 - 定位当前词：`last word where word.start <= 节目内已播秒数 + 0.08`，并高亮其所在整句。
 

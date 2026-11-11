@@ -24,9 +24,9 @@ public static class MauiProgram
 		builder.Services.AddSingleton<ILiveRadioService>(_ =>
 			new LiveRadioService(new HttpClient { BaseAddress = new Uri("https://slowenglish.fm/") }));
 
-		// API：逐词字幕计时（media.slowenglish.fm）
+		// API：逐词字幕计时（slowenglish.fm/timings/runs/{runId}/{kind}/word-timings.json）
 		builder.Services.AddSingleton<ITimingsService>(_ =>
-			new TimingsService(new HttpClient { BaseAddress = new Uri("https://media.slowenglish.fm/") }));
+			new TimingsService(new HttpClient { BaseAddress = new Uri("https://slowenglish.fm/") }));
 
 		builder.Services.AddSingleton<RadioViewModel>();
 
