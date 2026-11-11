@@ -79,6 +79,23 @@ dotnet build -f net10.0-android -c Debug /t:Install
 
 > 如需在 Windows 上本地调试 UI，可在 `SlowEnglishFmApp.csproj` 的 `<TargetFrameworks>` 追加 `net10.0-windows10.0.19041.0`，并安装 `maui-windows` 工作负载。
 
+## 发布（CI 自动打包 APK）
+
+推送以 `v` 开头的 tag 即触发 GitHub Actions（`.github/workflows/android-release.yml`）：
+在 ubuntu 上构建 Release APK，并以 tag 命名发布到 GitHub Release，产物为
+`SlowEnglishFmApp-<版本>-android.apk`（胖包，含 arm64-v8a / armeabi-v7a / x86_64 等全部 ABI）。
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+- APK 的版本号取自 tag（去掉 `v` 前缀），构建号取 CI 的 run number。
+- **签名**：推荐在仓库 Settings → Secrets and variables → Actions 配置四个 secrets——
+  `ANDROID_KEYSTORE_BASE64`（`base64 -w0 app.keystore` 的输出）、`ANDROID_KEYSTORE_PASSWORD`、
+  `ANDROID_KEYSTORE_ALIAS`、`ANDROID_KEY_PASSWORD`，CI 会用正式签名打包。
+  未配置时 CI 会临时生成一个 keystore 签名（**每次构建的签名不同**，升级安装前需先卸载旧版本）。
+
 ## 项目结构
 
 | 文件 | 说明 |
