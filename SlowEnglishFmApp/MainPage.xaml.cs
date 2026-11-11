@@ -19,6 +19,7 @@ public partial class MainPage : ContentPage
     private bool _pendingScroll;      // 滚动期间又有新目标，结束后补一次
     private bool _turnResetPending;   // 刚换句，需要先把滚动位置归零
     private bool _stopping;           // 正在停止，防止 Stop 事件重入
+    private int _attemptId;           // 播放请求序号：每次播放/停止 +1，用于作废过期的兜底检查
 
     // 布局模式：null = 尚未确定；true = 横屏紧凑，false = 竖屏常规
     private bool? _compact;
@@ -67,8 +68,9 @@ public partial class MainPage : ContentPage
     ///
     /// 手机/车机横屏时可用高度只有竖屏的一半左右，而顶部台标+标题、底部播放按钮都是固定高度，
     /// 结果「*」行的字幕卡片被压成一条窄缝，ScrollView 只能露出一条被裁切的文字
-    /// （现象：横屏看不到字幕）。这里在横屏下把上下两块收紧（缩小内边距、字号、按钮高度），
-    /// 把省下来的高度全部让给字幕。
+    /// （现象：横屏看不到字幕）。横屏采用两项措施：
+    /// 1. 顶部/底部收紧（缩小内边距、字号、标题限制为 1 行）；
+    /// 2. 底部大按钮换成顶部台标右侧的 64dp 圆形按钮，底部整块高度让给字幕。
     /// </summary>
     private void ApplyLayoutMode()
     {
@@ -93,12 +95,12 @@ public partial class MainPage : ContentPage
             SubtitleBorder.Margin = new Thickness(12, 2);
             SubtitleBorder.Padding = new Thickness(10, 6);
 
-            BottomPanel.Padding = new Thickness(16, 2, 16, 10);
+            BottomPanel.Padding = new Thickness(16, 0, 16, 6);
             StatusLabel.FontSize = 12;
-            PlayButton.FontSize = 20;
-            PlayButton.HeightRequest = 56;
-            PlayButton.CornerRadius = 28;
-            PlayButton.Margin = new Thickness(0, 2);
+
+            // 横屏：控制按钮移到顶部台标右侧（圆形），底部大按钮隐藏。
+            PlayButton.IsVisible = false;
+            CompactPlayButton.IsVisible = true;
         }
         else
         {
@@ -117,6 +119,9 @@ public partial class MainPage : ContentPage
 
             BottomPanel.Padding = new Thickness(24, 10, 24, 24);
             StatusLabel.FontSize = 16;
+            // 竖屏：恢复底部大按钮，隐藏顶部圆形按钮。
+            PlayButton.IsVisible = true;
+            CompactPlayButton.IsVisible = false;
             PlayButton.FontSize = 28;
             PlayButton.HeightRequest = 84;
             PlayButton.CornerRadius = 42;
@@ -169,6 +174,7 @@ public partial class MainPage : ContentPage
     private void HandlePlayState(bool playing)
     {
         DeviceDisplay.Current.KeepScreenOn = playing;
+        int attempt = ++_attemptId;   // 作废上一次尚未跑完的兜底检查
 
         if (playing)
         {
@@ -179,10 +185,42 @@ public partial class MainPage : ContentPage
                 _player.Source = MediaSource.FromUri(new Uri(_vm.BeginNewConnection()));
             }
             _player.Play();
+
+            // 快速「停止→播放」时，Play() 可能落在播放器还没准备好的时刻而被忽略，
+            // 结果是界面显示「停止」但其实没播：PositionChanged 不再上报，
+            // 字幕的时间基准整条冻住（现象：字幕卡在一个词上不动）。
+            // 这里在很短的时间窗口内补一次 Play()，确保真的播起来。
+            _ = EnsurePlayingAsync(attempt);
         }
         else
         {
             StopPlayback();
+        }
+    }
+
+    /// <summary>
+    /// 播放启动后的兜底检查：若用户意图是「播放」但播放器仍停在 Paused/Stopped，
+    /// 再补一次 Play()。只在刚点播放的一两秒内生效，不会干扰系统正常暂停（如来电）。
+    /// </summary>
+    private async Task EnsurePlayingAsync(int attempt)
+    {
+        try
+        {
+            for (int i = 0; i < 2; i++)
+            {
+                await Task.Delay(700);
+
+                // 期间用户又点了停止/播放，或者页面已经停止播放：本次检查作废。
+                if (attempt != _attemptId || !_vm.IsPlaying || _stopping) return;
+                if (_player.Source is null) return;
+
+                if (_player.CurrentState is MediaElementState.Paused or MediaElementState.Stopped)
+                    _player.Play();
+            }
+        }
+        catch
+        {
+            // 页面已销毁 / 播放器已释放：忽略。
         }
     }
 
@@ -226,6 +264,11 @@ public partial class MainPage : ContentPage
             _playbackBegun = true;
             _vm.NotifyPlaybackStarted();
         }
+
+        // 媒体已就绪但没在播放：说明之前的 Play() 落在了未就绪的时刻被忽略，
+        // 这里按用户意图补一次（否则会「显示停止中、实际没声音、字幕也不动」）。
+        if (_vm.IsPlaying && !_stopping && _player.CurrentState is not MediaElementState.Playing)
+            _player.Play();
     }
 
     private void OnMediaStateChanged(object? sender, EventArgs e)

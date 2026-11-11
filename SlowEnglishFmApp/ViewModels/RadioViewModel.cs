@@ -73,13 +73,35 @@ public class RadioViewModel : INotifyPropertyChanged, IDisposable
     // 每次都把服务端的缓冲区长度叠加进锚点 → 字幕与标题越来越超前（本次修复的问题）。
     private TimeSpan _position;                 // MediaElement.Position：真实播放进度
     private bool _positionReliable;             // 收到过真实的 Position 才认为可用
+    private long _lastPositionTick;             // 上一次 Position「发生变化」的时刻（Stopwatch 时间戳）
+    /// <summary>
+    /// Position 多久没变化就认为停止上报。取值要大于媒体元素的上报周期（Android 上进度
+    /// 常以 1 秒为粒度上报，同一秒内数值不变属正常），2.5 秒可以避免正常上报被误判为停更。
+    /// </summary>
+    private static readonly TimeSpan PositionStallGrace = TimeSpan.FromSeconds(2.5);
     private TimeSpan _positionZero;             // 映射零点（播放进度侧）
     private DateTimeOffset _programmeAtZero = DateTimeOffset.UtcNow; // 映射零点（节目时刻侧）
     private bool _clockCalibrated;
     /// <summary>直播连接 id：流地址与 /api/live-clock 必须用同一个。每次重新连接都会换成新的。</summary>
     private string _connectionId = Guid.NewGuid().ToString("N");
     private CancellationTokenSource? _calCts;
-    private bool _recalibrateNow;
+    /// <summary>校准循环在后台线程读、主线程/进度回调写，用 volatile 保证能及时看到变更。</summary>
+    private volatile bool _recalibrateNow;
+
+    /// <summary>
+    /// 播放会话序号：每次「停止」和每次新建连接都 +1。
+    /// 校准请求是异步的，返回时可能已经跨过一次停止/重播——旧会话的结果必须丢弃，
+    /// 否则会把上一次播放的 programmeAt 与播放进度写进零点，字幕会定位到错误的节目
+    /// （现象：停止再播放后字幕卡在一句话上不再推进）。
+    /// </summary>
+    private int _sessionEpoch;
+
+    /// <summary>当前字幕集最后一个词条的结束秒数，用于检测时间映射跑偏。</summary>
+    private double _wordsEnd;
+    /// <summary>上次「自愈」校准请求的时间，避免反复请求。</summary>
+    private DateTimeOffset _lastHealAt;
+    /// <summary>上一次高亮词发生变化的时刻（Stopwatch 时间戳），用于看门狗检测时间基准被冻住。</summary>
+    private long _lastAdvanceTick = Stopwatch.GetTimestamp();
 
     private bool _isPlaying;
     private string _programmeTitle = "Slow English FM";
@@ -142,6 +164,11 @@ public class RadioViewModel : INotifyPropertyChanged, IDisposable
     /// </summary>
     public string BeginNewConnection()
     {
+        // 新会话：先让旧的校准循环失效（在飞行的请求返回后会被 epoch 校验丢弃），
+        // 再换连接 id，保证后续 /api/live-clock 用的确实是这条新连接。
+        Interlocked.Increment(ref _sessionEpoch);
+        StopClockCalibration();
+
         lock (_clockGate) _connectionId = Guid.NewGuid().ToString("N");
         return StreamUrl;
     }
@@ -234,10 +261,12 @@ public class RadioViewModel : INotifyPropertyChanged, IDisposable
             if (!_positionReliable)
             {
                 var now = _programmeAtZero + (_sw.Elapsed - _positionZero);
-                _sw.Restart();
                 _positionZero = TimeSpan.Zero;
                 _programmeAtZero = now;
             }
+            // 兜底计时无论哪种情况都要重新起跑：暂停期间它被停掉了，
+            // 若之后 Position 又变得不可用，指望它继续走时就不能是停着的。
+            _sw.Restart();
         }
 
         _recalibrateNow = true;
@@ -255,6 +284,12 @@ public class RadioViewModel : INotifyPropertyChanged, IDisposable
     /// </summary>
     public void NotifyPlaybackStopped()
     {
+        // 关键顺序：先作废会话（epoch +1）并取消失败的校准循环，再重置映射。
+        // 否则停止瞬间仍在飞行的 /api/live-clock 请求返回后，会把旧会话的零点写回来，
+        // 下次播放就会沿用错误的节目时刻。
+        Interlocked.Increment(ref _sessionEpoch);
+        StopClockCalibration();
+
         IsPlaying = false;
         _sw.Reset();
 
@@ -270,6 +305,7 @@ public class RadioViewModel : INotifyPropertyChanged, IDisposable
 
         _anchoredEntryId = null;
         _words = null;
+        _wordsEnd = 0;
         _currentTurn = -1;
         _lastActiveIndex = -1;
         ActiveWordIndex = -1;
@@ -294,17 +330,26 @@ public class RadioViewModel : INotifyPropertyChanged, IDisposable
     {
         if (position < TimeSpan.Zero) return;
 
+        // 已停止（或正在停止）时，媒体元素可能还会补发上一会话的进度事件。
+        // 这些值属于旧会话，写进来会污染新会话的零点，直接丢弃。
+        if (!IsPlaying) return;
+
         lock (_clockGate)
         {
-            // Position 停在 0 说明这个实现根本没推进播放位置（不能当作可信进度，
-            // 否则字幕会卡在第一句不动），只记录、继续用 Stopwatch 兜底。
-            if (position == TimeSpan.Zero)
+            // 尚未拿到过可信进度时，一直报 0 说明这个实现根本没推进播放位置，
+            // 不能当作可信进度（否则字幕会卡在第一句不动），只记录、继续用 Stopwatch 兜底。
+            if (position == TimeSpan.Zero && !_positionReliable)
             {
-                _position = position;
+                _position = TimeSpan.Zero;
                 return;
             }
 
-            TimeSpan oldProgress = _positionReliable ? _position : _sw.Elapsed;
+            // 与“当前进度”比较：若之前处于 Position 停更、正在按真实时间外推，
+            // 那么恢复后的真实值与外推值之差才是真正需要补偿的断点。
+            TimeSpan oldProgress = _positionReliable ? EffectiveProgressLocked() : _sw.Elapsed;
+
+            if (position != _position)
+                _lastPositionTick = Stopwatch.GetTimestamp();
 
             // 首次拿到真实进度、或进度大幅跳变（流重连：回退到更早，直接跳到新的直播边缘）
             // 都属于“断点”，平移零点以保持节目时刻连续，避免字幕跳变或停住。
@@ -313,6 +358,8 @@ public class RadioViewModel : INotifyPropertyChanged, IDisposable
                                  || position - oldProgress > TimeSpan.FromSeconds(5);  // 前跳
 
             _position = position;
+            if (!_positionReliable)
+                _lastPositionTick = Stopwatch.GetTimestamp();
             if (!discontinuity) return;
 
             _positionZero += position - oldProgress;
@@ -344,6 +391,7 @@ public class RadioViewModel : INotifyPropertyChanged, IDisposable
 
         _anchoredEntryId = entry?.Id;
         _words = null;
+        _wordsEnd = 0;
         _currentTurn = -1;
         _lastActiveIndex = -1;
         ClearTurnWords();
@@ -379,6 +427,7 @@ public class RadioViewModel : INotifyPropertyChanged, IDisposable
         _currentTurn = -1;
         _lastActiveIndex = -1;
         _words = null;
+        _wordsEnd = 0;
         ClearTurnWords();
         UpdateTitles(entry);
 
@@ -426,17 +475,30 @@ public class RadioViewModel : INotifyPropertyChanged, IDisposable
     private TimeSpan ProgressNow()
     {
         lock (_clockGate)
-            return _positionReliable ? _position : _sw.Elapsed;
+            return EffectiveProgressLocked();
+    }
+
+    /// <summary>
+    /// 计算当前进度（调用方必须已持有 _clockGate）。
+    /// 正常情况下就是 MediaElement.Position；但快速停止/重播、播放器内部重连等情况下
+    /// PositionChanged 可能直接不再上报，Position 会永久停在一个值上 —— 若继续用它，
+    /// 「节目时刻」就冻住了，字幕会卡在某个词不再推进。
+    /// 因此当 Position 超过一小段时间没有变化时，用真实时间对最后一次进度做外推，
+    /// 保证字幕仍以 1 倍速前进；Position 恢复后由断点检测自动重新对齐。
+    /// </summary>
+    private TimeSpan EffectiveProgressLocked()
+    {
+        if (!_positionReliable) return _sw.Elapsed;
+
+        var stalled = Stopwatch.GetElapsedTime(_lastPositionTick);
+        return stalled <= PositionStallGrace ? _position : _position + stalled;
     }
 
     /// <summary>当前听到的音频所对应的节目时刻（网站 livePlaybackNow 的等价实现）。</summary>
     private DateTimeOffset ProgrammeNow()
     {
         lock (_clockGate)
-        {
-            var progress = _positionReliable ? _position : _sw.Elapsed;
-            return _programmeAtZero + (progress - _positionZero);
-        }
+            return _programmeAtZero + (EffectiveProgressLocked() - _positionZero);
     }
 
     /// <summary>在时间轴上定位“此刻正在播出的条目”；时间轴还没数据时退回服务器的 current。</summary>
@@ -465,15 +527,27 @@ public class RadioViewModel : INotifyPropertyChanged, IDisposable
     private void StartClockCalibration()
     {
         if (_calCts is not null) return;
-        _calCts = new CancellationTokenSource();
-        _ = CalibrateClockAsync(_calCts.Token);
+        var cts = new CancellationTokenSource();
+        _calCts = cts;
+        _ = CalibrateClockAsync(Volatile.Read(ref _sessionEpoch), cts.Token);
     }
 
-    private async Task CalibrateClockAsync(CancellationToken ct)
+    /// <summary>
+    /// 结束当前校准循环。不 Dispose：循环可能仍持着该 token 在 await 中，
+    /// 只发取消信号，由它自己退出即可（每个会话最多一个 CTS，代价可忽略）。
+    /// </summary>
+    private void StopClockCalibration()
+    {
+        var cts = Interlocked.Exchange(ref _calCts, null);
+        if (cts is null) return;
+        try { cts.Cancel(); } catch { /* 已释放/已取消，忽略 */ }
+    }
+
+    private async Task CalibrateClockAsync(int epoch, CancellationToken ct)
     {
         TimeSpan backoff = TimeSpan.FromMilliseconds(500);
 
-        while (!ct.IsCancellationRequested)
+        while (!ct.IsCancellationRequested && epoch == Volatile.Read(ref _sessionEpoch))
         {
             if (!IsPlaying)
             {
@@ -488,16 +562,33 @@ public class RadioViewModel : INotifyPropertyChanged, IDisposable
                 continue;
             }
 
-            // 用“请求发出瞬间的播放进度”与 programmeAt 配对，误差最小。
+            // 用“请求发出瞬间的播放进度”与 programmeAt 配对，误差最小；
+            // 连接 id 也在这里定格，避免请求过程中被新会话改写。
+            var connectionId = ConnectionId;
             var progressAtRequest = ProgressNow();
-            var programmeAt = await _live.GetProgrammeAtAsync(ConnectionId).ConfigureAwait(false);
-            if (ct.IsCancellationRequested) break;
+
+            DateTimeOffset? programmeAt = null;
+            try
+            {
+                programmeAt = await _live.GetProgrammeAtAsync(connectionId).ConfigureAwait(false);
+            }
+            catch
+            {
+                // 网络异常不应让校准循环永久退出（否则本次播放再也拿不到校准结果）。
+                programmeAt = null;
+            }
+
+            // 请求期间用户可能已经停止或重新播放：本次结果作废，直接退出，由新会话重新校准。
+            if (ct.IsCancellationRequested || epoch != Volatile.Read(ref _sessionEpoch)) break;
 
             if (programmeAt.HasValue)
             {
                 // 零点写入调度到主线程，避免与 TickKaraoke 的读取交错产生撕裂读。
                 MainThread.BeginInvokeOnMainThread(() =>
                 {
+                    // 再次校验会话：BeginInvoke 排队期间也可能已经停止重播。
+                    if (epoch != Volatile.Read(ref _sessionEpoch) || !IsPlaying) return;
+
                     lock (_clockGate)
                     {
                         _programmeAtZero = programmeAt.Value;
@@ -547,6 +638,8 @@ public class RadioViewModel : INotifyPropertyChanged, IDisposable
             }
 
             _words = words;
+            _wordsEnd = words.Max(w => w.End);
+            _lastAdvanceTick = Stopwatch.GetTimestamp();
             ShowKaraoke = true;
             StatusMessage = string.Empty;
             _currentTurn = -1; // 强制下一帧重建当前句
@@ -575,6 +668,18 @@ public class RadioViewModel : INotifyPropertyChanged, IDisposable
 
         double elapsed = Math.Max(0, (now - entry.StartsAt).TotalSeconds)
                          + entry.AudioOffsetSeconds;
+
+        // 自愈：节目时刻已经明显超过这一集字幕的结尾，说明时间映射跑偏了
+        // （典型场景就是停止→重播时沿用了上一次的零点）。这时字幕会永久停在最后一句、
+        // 高亮不再移动；主动请求一次重新校准把映射拉回来，而不是干等着。
+        if (elapsed > _wordsEnd + 30
+            && !_recalibrateNow
+            && DateTimeOffset.UtcNow - _lastHealAt > TimeSpan.FromSeconds(30))
+        {
+            _lastHealAt = DateTimeOffset.UtcNow;
+            _recalibrateNow = true;
+        }
+
         var active = _words.LastOrDefault(w => w.Start <= elapsed + 0.08);
         int turn = active?.Turn ?? 0;
 
@@ -597,7 +702,21 @@ public class RadioViewModel : INotifyPropertyChanged, IDisposable
         if (idx != _lastActiveIndex)
         {
             _lastActiveIndex = idx;
+            _lastAdvanceTick = Stopwatch.GetTimestamp();
             ActiveWordIndex = idx;
+        }
+        else if (elapsed > 0 && elapsed < _wordsEnd
+                 && Stopwatch.GetElapsedTime(_lastAdvanceTick).TotalSeconds > 6)
+        {
+            // 看门狗：播放中高亮已经 6 秒没有任何变化，而节目时刻仍在这集字幕范围内，
+            // 说明时间基准被冻住了（Position 停更 + 兜底计时也被停掉等极端情况）。
+            // 先确保兜底计时在跑，再请求一次重新校准 —— 字幕会立刻跳回正确位置继续走。
+            lock (_clockGate)
+            {
+                if (!_sw.IsRunning) _sw.Start();
+            }
+            _recalibrateNow = true;
+            _lastAdvanceTick = Stopwatch.GetTimestamp();
         }
     }
 

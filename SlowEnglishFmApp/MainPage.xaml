@@ -32,8 +32,8 @@
 
     <Grid x:Name="RootGrid" RowDefinitions="Auto, *, Auto" ColumnDefinitions="*">
 
-        <!-- 顶部：台标 + 当前节目 + 在线人数 -->
-        <Grid x:Name="TopPanel" Grid.Row="0" Padding="24,18,24,8" ColumnDefinitions="*" RowDefinitions="Auto,Auto">
+        <!-- 顶部：台标 + 当前节目 + 在线人数（右侧留位给横屏的圆形播放/停止按钮） -->
+        <Grid x:Name="TopPanel" Grid.Row="0" Padding="24,18,24,8" ColumnDefinitions="*,Auto" RowDefinitions="Auto,Auto">
             <HorizontalStackLayout Grid.Column="0" Spacing="14" VerticalOptions="Center">
                 <Border x:Name="OnAirBadge" Padding="10,4" StrokeShape="RoundRectangle 8" BackgroundColor="#B00020" Stroke="Transparent">
                     <HorizontalStackLayout Spacing="8">
@@ -53,6 +53,44 @@
                        TextColor="#7E8794" FontSize="16"
                        IsVisible="{Binding NextTitle, Converter={StaticResource StringNotEmptyConverter}}" />
             </VerticalStackLayout>
+
+            <!--
+                横屏专用：右上角圆形播放/停止按钮。
+                横屏高度紧张，把控制按钮挪到顶部台标右侧，底部就能整块让给字幕。
+                竖屏仍用底部的大号按钮（本控件在竖屏下隐藏）。
+                图标用 Path / BoxView 绘制：emoji 字符（▶ / ⏹）在 Android 上会被渲染成彩色
+                方形emoji，放进圆形按钮里很难看。
+            -->
+            <Border x:Name="CompactPlayButton" Grid.Column="1" Grid.Row="0" Grid.RowSpan="2"
+                    IsVisible="False"
+                    WidthRequest="64" HeightRequest="64"
+                    StrokeShape="RoundRectangle 32" Stroke="Transparent"
+                    BackgroundColor="#1F6FEB"
+                    HorizontalOptions="End" VerticalOptions="Center"
+                    Margin="12,0,0,0">
+                <Border.GestureRecognizers>
+                    <TapGestureRecognizer Command="{Binding TogglePlayCommand}" />
+                </Border.GestureRecognizers>
+                <Grid>
+                    <Path Data="M 0,0 L 0,30 L 25,15 Z" Fill="White" Stroke="Transparent"
+                          HorizontalOptions="Center" VerticalOptions="Center">
+                        <Path.Triggers>
+                            <DataTrigger TargetType="Path" Binding="{Binding IsPlaying}" Value="True">
+                                <Setter Property="IsVisible" Value="False" />
+                            </DataTrigger>
+                        </Path.Triggers>
+                    </Path>
+                    <BoxView WidthRequest="22" HeightRequest="22" CornerRadius="3" Color="White"
+                             IsVisible="False"
+                             HorizontalOptions="Center" VerticalOptions="Center">
+                        <BoxView.Triggers>
+                            <DataTrigger TargetType="BoxView" Binding="{Binding IsPlaying}" Value="True">
+                                <Setter Property="IsVisible" Value="True" />
+                            </DataTrigger>
+                        </BoxView.Triggers>
+                    </BoxView>
+                </Grid>
+            </Border>
         </Grid>
 
         <!-- 中部：卡拉OK 字幕 -->
