@@ -121,8 +121,8 @@
                     直接把 FlexLayout 作为 ScrollView 内容时，横竖屏切换后宽度约束可能失真，
                     整句会排成一行并横向溢出被裁掉（现象：文字左右两边都被切）。
                 -->
-                <Grid HorizontalOptions="Fill" VerticalOptions="Start">
-                    <FlexLayout x:Name="WordsHost"
+                <Grid HorizontalOptions="Fill" VerticalOptions="Start" RowDefinitions="Auto,Auto">
+                    <FlexLayout x:Name="WordsHost" Grid.Row="0"
                                 BindableLayout.ItemsSource="{Binding CurrentTurnWords}"
                                 Wrap="Wrap" JustifyContent="Center" AlignItems="Center" AlignContent="Start">
                         <BindableLayout.ItemTemplate>
@@ -147,6 +147,13 @@
                             </DataTemplate>
                         </BindableLayout.ItemTemplate>
                     </FlexLayout>
+
+                    <!--
+                        底部留白（高度运行时计算，默认 0）：只有当前这句字幕本身超过一屏时才垫上，
+                        值约为「半个视口 - 半行」，作用是把最后一行也能滚到视口正中。
+                        不垫的话，句尾那几行永远被压在底部，永远无法居中。
+                    -->
+                    <BoxView x:Name="BottomSpacer" Grid.Row="1" HeightRequest="0" Color="Transparent" />
                 </Grid>
             </ScrollView>
         </Border>

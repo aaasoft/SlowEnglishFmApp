@@ -16,9 +16,12 @@ public partial class MainPage : ContentPage
     private bool _playbackBegun;
 
     // 字幕滚动控制
-    private bool _scrolling;          // 正在执行一次滚动
-    private bool _pendingScroll;      // 滚动期间又有新目标，结束后补一次
-    private bool _turnResetPending;   // 刚换句，需要先把滚动位置归零
+    private bool _turnResetPending;        // 刚换句，需要先把滚动位置归零
+    private double _lastScrolledLineY = double.NaN;  // 上次滚动所针对的「行」（行顶 Y），行内换词不重复滚
+    private double _pendingScrollY = double.NaN;     // 平滑滚动进行中收到的新目标，动画结束后补一次
+    private bool _scrollAnimating;                   // 平滑滚动动画进行中
+    private int _scrollAnimId;                       // 动画序号：换句/停止时自增，作废在途的补滚
+    private const int ScrollAnimSettleMs = 260;      // 原生平滑滚动的时长估算，用于挡掉动画期间的重复滚动
     private bool _stopping;           // 正在停止，防止 Stop 事件重入
     private int _attemptId;           // 播放请求序号：每次播放/停止 +1，用于作废过期的兜底检查
     private bool _hasPlayed;          // 本次会话是否真正到达过 Playing（区分「外部暂停」与「Play() 被吞」）
@@ -64,6 +67,12 @@ public partial class MainPage : ContentPage
 
         _vm.PropertyChanged += OnViewModelPropertyChanged;
         _vm.TurnChanged += OnTurnChanged;
+
+        // 字幕内容的实际高度变化（换句、字体/视口变化）时重算底部留白，
+        // 保证最后一行也能滚到视口正中。
+        // 推到下一轮消息循环再改 HeightRequest：避免在布局周期内改需求引起重入布局。
+        WordsHost.SizeChanged += (_, _) => Dispatcher.Dispatch(UpdateBottomSpacer);
+        SubtitleScroll.SizeChanged += (_, _) => Dispatcher.Dispatch(UpdateBottomSpacer);
 
         SizeChanged += (_, _) => ApplyLayoutMode();
     }
@@ -144,6 +153,11 @@ public partial class MainPage : ContentPage
         // 视口尺寸变了，旧的字幕滚动偏移不再有效，回到顶部由接下来的高亮重新定位。
         WordsHost.InvalidateMeasure();
         _turnResetPending = true;
+        _lastScrolledLineY = double.NaN;
+        _pendingScrollY = double.NaN;
+        _scrollAnimId++;
+        _scrollAnimating = false;
+        UpdateBottomSpacer();
         _ = ResetScrollToTopAsync();
     }
 
@@ -172,12 +186,45 @@ public partial class MainPage : ContentPage
     private void HandleTurnRebuilt()
     {
         _turnResetPending = true;
-        _scrolling = false;
-        _pendingScroll = false;
+        _lastScrolledLineY = double.NaN;
+        _pendingScrollY = double.NaN;
+        _scrollAnimId++;          // 作废还在等动画结束的补滚任务
+        _scrollAnimating = false;
 
         // 换句重建和滚动归零若挤在同一帧，这一帧会明显变长（就是「字幕顿一下」）。
         // 把归零推到下一轮消息循环：重建完成后新内容已有正确高度，滚一次就到位。
-        Dispatcher.Dispatch(() => _ = ResetScrollToTopAsync());
+        Dispatcher.Dispatch(() =>
+        {
+            UpdateBottomSpacer();
+            _ = ResetScrollToTopAsync();
+        });
+    }
+
+    /// <summary>
+    /// 重算字幕底部的留白高度。
+    ///
+    /// 只有「这一句字幕本身高过一屏」时才垫留白：否则最后几行永远被压在视口底部，
+    /// 无论怎么滚都无法居中（用户看到的会是"停在最后一行、不在中间"）。
+    /// 留白取「半个视口 − 半行」，正好让最后一行能滚到正中；短句不垫，
+    /// 避免把整句顶到上方、露出一片空白。
+    /// </summary>
+    private void UpdateBottomSpacer()
+    {
+        double viewHeight = SubtitleScroll.Height;
+        if (viewHeight <= 0) return;
+
+        double contentHeight = WordsHost.Height;   // 停止播放后清空字幕时为 0
+
+        double lineHeight = 0;
+        if (WordsHost.Children.Count > 0 && WordsHost.Children[0] is View first)
+            lineHeight = first.Height;
+
+        double spacer = 0;
+        if (contentHeight > viewHeight + 1 && lineHeight > 0)
+            spacer = Math.Max(0, viewHeight / 2 - lineHeight / 2);
+
+        if (Math.Abs(BottomSpacer.HeightRequest - spacer) > 1)
+            BottomSpacer.HeightRequest = spacer;
     }
 
     private async Task ResetScrollToTopAsync()
@@ -424,11 +471,17 @@ public partial class MainPage : ContentPage
     }
 
     /// <summary>
-    /// 让当前词保持可见。
-    /// 策略（针对车机/低端机的流畅度）：
-    /// 1. 只在当前词**不在可视区域**时才滚动 —— 大多数句子一屏放得下，完全不滚动；
-    /// 2. 滚动不使用动画（瞬时对齐），避免 200~300ms 的动画与下一个词的高亮相互排队造成卡顿；
-    /// 3. 串行化，避免并发滚动互相打断。
+    /// 让「当前激活词所在的那一行」平滑滚到视口垂直正中。
+    ///
+    /// 设计要点：
+    /// 1. 以「行」为单位而不是「词」：FlexLayout 里同一行各词的 Y 相同，行内换词不触发滚动；
+    ///    否则每换一个词就推一次视口，画面会持续晃动。
+    /// 2. 使用平滑滚动（ScrollToAsync animated=true，Android 走原生 smoothScrollTo），
+    ///    而不是原来的瞬时跳转 —— 文字是「滑过去」而不是「闪一下」。
+    /// 3. 目标位置做过夹紧：内容不足一屏时停在顶部；句首、句尾的行受可滚动范围限制
+    ///    （句尾的居中由 BottomSpacer 保证）。
+    /// 4. 动画期间到来的新目标只保留最后一个，等这一次动画结束后再补滚，
+    ///    避免多次滚动互相截断导致抖动。
     /// </summary>
     private async Task ScrollToActiveWordAsync()
     {
@@ -439,52 +492,85 @@ public partial class MainPage : ContentPage
         if (WordsHost.Children[idx] is not View target)
             return;
 
-        // 换句后第一次定位：先确保已回到顶部，再判断是否需要滚到目标词。
+        // 换句后第一次定位：先确保已回到顶部，再判断是否需要滚到目标行。
         if (_turnResetPending)
         {
             _turnResetPending = false;
+            _lastScrolledLineY = double.NaN;
             await ResetScrollToTopAsync();
         }
 
         double viewHeight = SubtitleScroll.Height;
-        double wordHeight = target.Height;
-        if (viewHeight <= 0 || wordHeight <= 0)
+        double lineHeight = target.Height;
+        if (viewHeight <= 0 || lineHeight <= 0)
             return;
 
-        double top = target.Y;
-        double bottom = top + wordHeight;
-        double scrollY = SubtitleScroll.ScrollY;
+        double lineTop = target.Y;
 
-        // 完全可见就什么都不做（最常见路径，零开销）。
-        bool visible = top >= scrollY && bottom <= scrollY + viewHeight;
-        if (visible)
+        // 同一行内换词：行位置没变，已经处于居中状态，直接返回（最常见路径，零开销）。
+        if (!double.IsNaN(_lastScrolledLineY) && Math.Abs(lineTop - _lastScrolledLineY) < 1)
+            return;
+        _lastScrolledLineY = lineTop;
+
+        // 行中心对齐到视口中心。底部占位（BottomSpacer）已计入内容高度，
+        // 所以最后一行同样能滚到正中。
+        double lineCenter = lineTop + lineHeight / 2;
+        double contentHeight = Math.Max(
+            SubtitleScroll.ContentSize.Height,
+            WordsHost.Height + BottomSpacer.HeightRequest);
+        double maxScroll = Math.Max(0, contentHeight - viewHeight);
+        double targetY = Math.Clamp(lineCenter - viewHeight / 2, 0, maxScroll);
+
+        // 已经基本居中（不足 2dp）：不必滚动。
+        if (Math.Abs(targetY - SubtitleScroll.ScrollY) < 2)
             return;
 
-        if (_scrolling)
+        if (_scrollAnimating)
         {
-            _pendingScroll = true;
+            _pendingScrollY = targetY;   // 动画结束后补滚到最新目标
             return;
         }
 
-        _scrolling = true;
+        await AnimateScrollAsync(targetY);
+    }
+
+    /// <summary>
+    /// 平滑滚动到指定偏移。
+    ///
+    /// ScrollToAsync(animated: true) 在 Android 上落到原生的 smoothScrollTo：调用即刻返回、
+    /// 不等待动画播完，所以这里用一个短窗口（ScrollAnimSettleMs）把动画期间的重复请求合并掉，
+    /// 否则一行只隔几百毫秒时会出现两次动画互相打断、看着一卡一卡。
+    /// </summary>
+    private async Task AnimateScrollAsync(double targetY)
+    {
+        int id = ++_scrollAnimId;
+        _scrollAnimating = true;
+
         try
         {
-            // 把当前词放到视口靠上位置（约 28%），后续几个词都能顺带看到。
-            double targetY = Math.Max(0, top - viewHeight * 0.28);
-            await SubtitleScroll.ScrollToAsync(0, targetY, false);
+            await SubtitleScroll.ScrollToAsync(0, targetY, true);
         }
         catch
         {
             // 内容正在重建时可能失败，忽略。
         }
-        finally
+
+        try
         {
-            _scrolling = false;
-            if (_pendingScroll)
-            {
-                _pendingScroll = false;
-                _ = ScrollToActiveWordAsync();
-            }
+            await Task.Delay(ScrollAnimSettleMs);
         }
+        catch
+        {
+            // 页面已销毁：忽略。
+        }
+
+        if (id != _scrollAnimId) return;   // 期间换句 / 停止 / 视口变化：本次作废
+
+        _scrollAnimating = false;
+
+        double pending = _pendingScrollY;
+        _pendingScrollY = double.NaN;
+        if (!double.IsNaN(pending) && Math.Abs(pending - SubtitleScroll.ScrollY) > 2)
+            await AnimateScrollAsync(pending);
     }
 }
