@@ -29,6 +29,7 @@ public sealed class LiveRadioService : ILiveRadioService
 
     private LiveEntry? _current;
     private IReadOnlyList<LiveEntry>? _next;
+    private IReadOnlyList<LiveEntry> _timeline = Array.Empty<LiveEntry>();
     private int _listeners;
     private bool _available;
     private bool _running;
@@ -62,6 +63,11 @@ public sealed class LiveRadioService : ILiveRadioService
     {
         get { lock (_gate) return _listeners; }
         private set { lock (_gate) _listeners = value; }
+    }
+
+    public IReadOnlyList<LiveEntry> Timeline
+    {
+        get { lock (_gate) return _timeline; }
     }
 
     public event EventHandler<LiveEntry?>? CurrentChanged;
@@ -117,6 +123,9 @@ public sealed class LiveRadioService : ILiveRadioService
             }
 
             var next = ExtractEntryList(root, "next");
+            // 只取历史里最近的一小段（history 有 300+ 条，全解析没必要），用于按播放时刻回溯/定位节目。
+            var recentHistory = ExtractRecentHistory(root, 40);
+            var timeline = BuildTimeline(recentHistory, current, next);
 
             bool changed = Current?.Id != current?.Id;
 
@@ -126,6 +135,7 @@ public sealed class LiveRadioService : ILiveRadioService
                 _listeners = listeners;
                 _current = current;
                 _next = next;
+                _timeline = timeline;
             }
 
             if (changed)
@@ -172,6 +182,56 @@ public sealed class LiveRadioService : ILiveRadioService
         }
 
         return result;
+    }
+
+    /// <summary>
+    /// 从 history 数组中取最后 <paramref name="max"/> 条（history 按时间升序，越靠后越新），
+    /// 避免为 300+ 条历史记录做无谓的反序列化。
+    /// </summary>
+    private static IReadOnlyList<LiveEntry> ExtractRecentHistory(JsonElement root, int max)
+    {
+        if (!root.TryGetProperty("history", out var el) || el.ValueKind != JsonValueKind.Array)
+            return Array.Empty<LiveEntry>();
+
+        int total = el.GetArrayLength();
+        int skip = Math.Max(0, total - max);
+        var result = new List<LiveEntry>(Math.Min(total, max));
+
+        int i = 0;
+        foreach (var item in el.EnumerateArray())
+        {
+            if (i++ < skip) continue;
+            if (item.ValueKind != JsonValueKind.Object) continue;
+            try
+            {
+                var entry = item.Deserialize<LiveEntry>(JsonOptions);
+                if (entry is not null) result.Add(entry);
+            }
+            catch { /* 跳过无法解析的单条 */ }
+        }
+
+        return result;
+    }
+
+    /// <summary>把历史 + 当前 + 接下来的条目合成一条按开始时间升序的时间轴（按 Id 去重）。</summary>
+    private static IReadOnlyList<LiveEntry> BuildTimeline(
+        IReadOnlyList<LiveEntry> history,
+        LiveEntry? current,
+        IReadOnlyList<LiveEntry> next)
+    {
+        var byId = new Dictionary<string, LiveEntry>(StringComparer.Ordinal);
+
+        void Add(LiveEntry? e)
+        {
+            if (e is null || string.IsNullOrEmpty(e.Id)) return;
+            byId[e.Id] = e; // 后加入的覆盖先加入的（current/next 比 history 更新）
+        }
+
+        foreach (var e in history) Add(e);
+        Add(current);
+        foreach (var e in next) Add(e);
+
+        return byId.Values.OrderBy(e => e.StartsAt).ToList();
     }
 
     public void Dispose()

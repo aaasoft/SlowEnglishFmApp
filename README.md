@@ -31,14 +31,19 @@ https://slowenglish.fm/live.mp3?connection=<随机连接ID>
 - `next`：下一个节目
 - `catalogRevision`、`history` 等
 
-**同步策略（关键）**：直播流存在**服务端缓冲延迟（约 10~15 秒）**，若直接用本地墙钟 `(now - startsAt)` 推算，字幕会比实际听到的音频**快十几秒**。因此本播放器改用网站同款的服务器时钟校准：
+**同步策略（关键）**：直播流存在**服务端缓冲延迟（约 10~15 秒）**，若直接用本地墙钟 `(now - startsAt)` 推算，字幕会比实际听到的音频**快十几秒**。本播放器与网站（`app.js` 的 `livePlaybackNow()`）保持完全一致的机制：
 
 1. 连接直播流时带上连接 ID：`live.mp3?connection=<id>`；
-2. 拉流后轮询 `GET /api/live-clock?connection=<id>`，得到 `programmeAt`（**当前这段音频在服务器端的真实节目时刻**，已含缓冲延迟）；
-3. 以 `programmeAt` 锚定字幕时间轴，每 30 秒复校一次，纠正时钟漂移/重缓冲；
-4. 节目内已播秒数 = `当前真实节目时刻 − 节目 startsAt + audioOffsetSeconds − 手动微调`。
+2. 接流后请求 `GET /api/live-clock?connection=<id>`，得到 `programmeAt`（**这段音频在服务器端的真实节目时刻**，已含缓冲延迟），作为「播放进度 0 秒 ↔ 该节目时刻」的基准；
+3. **只在接流时校准一次**，之后节目时刻 = `programmeAt + (MediaElement.Position − 校准时的 Position)`，即完全由**真实音频播放进度**推进；
+4. 节目内已播秒数 = `当前节目时刻 − 节目 startsAt + audioOffsetSeconds − 手动微调`；
+5. 当前节目（标题/字幕）由同一「当前节目时刻」在节目时间轴上定位 —— 所以**标题和字幕永远与听到的音频处在同一时刻**。
 
-界面上的「字幕同步」±0.5s 仅用于补偿残余误差。若时钟一直未就绪（`Connection not ready`），会临时回退到墙钟，可在时钟生效后自动纠正。
+> 两个容易踩的坑，都已规避：
+> - **不能用墙钟推进**：音频一旦缓冲/卡顿，墙钟继续走而音频不走，字幕与标题会越来越超前。
+> - **不能周期性重新校准**：每次 `programmeAt` 都对应服务器推流的「队头」，比正在播放的音频超前一个缓冲区长度；反复用它校准会把这份超前不断叠加，造成「一开始同步、过一会儿就越跑越快」。
+
+界面上的「字幕同步」±0.5s 仅用于补偿残余误差。若时钟一直未就绪（`Connection not ready`），会临时回退到墙钟（略超前），时钟生效后自动纠正。
 
 ### 2.1 服务器时钟 — `GET https://slowenglish.fm/api/live-clock?connection=<id>`
 带 `Cache-Control: no-store`。返回 `{ "programmeAt": <Unix 毫秒> }`，即该连接当前播放音频对应的**真实节目时刻**。
@@ -79,9 +84,9 @@ dotnet build -f net10.0-android -c Debug /t:Install
 | `MauiProgram.cs` | DI 注册（`LiveRadioService` / `TimingsService` / `RadioViewModel`）+ `UseMauiCommunityToolkitMediaElement(isAndroidForegroundServiceEnabled: true)` |
 | `Models/LiveState.cs` | `/api/live` 返回模型 |
 | `Models/Timing.cs` | 字幕计时模型 |
-| `Services/LiveRadioService.cs` | 每 3 秒轮询 `/api/live`，跟踪当前节目；并提供 `/api/live-clock` 时钟查询 |
+| `Services/LiveRadioService.cs` | 每 3 秒轮询 `/api/live`，跟踪当前节目并合成节目时间轴（history 近 40 条 + current + next）；提供 `/api/live-clock` 时钟查询 |
 | `Services/TimingsService.cs` | 按 `runId`+`kind` 获取并缓存逐词字幕 |
-| `ViewModels/RadioViewModel.cs` | 播放状态 + 卡拉OK定位核心逻辑 |
+| `ViewModels/RadioViewModel.cs` | 播放状态 + 「播放进度 → 节目时刻」映射，驱动标题与卡拉OK定位 |
 | `MainPage.xaml(.cs)` | 车机/手机友好大字号深色 UI + MediaElement 协调 |
 | `Converters/StringNotEmptyConverter.cs` | 文本空值→可见性 |
 
@@ -96,5 +101,5 @@ dotnet build -f net10.0-android -c Debug /t:Install
 
 - **后台播放**：已通过 `UseMauiCommunityToolkitMediaElement(isAndroidForegroundServiceEnabled: true)` 启用 Android 前台服务，应用切到后台（锁屏 / 车机其他界面）时直播音频可继续播放；并已在 `AndroidManifest.xml` 声明 `FOREGROUND_SERVICE`、`FOREGROUND_SERVICE_MEDIA_PLAYBACK`、`POST_NOTIFICATIONS`、`WAKE_LOCK` 权限。Android 最低版本要求 26（Android 8.0）。
 - 进一步可加入 Android `MediaSession`（音频焦点 / 锁屏媒体控制、通知栏播放控件）。
-- 字幕同步基于「服务器时钟 `/api/live-clock` 校准」；若该端点暂时不可用会回退墙钟（此时字幕略超前），恢复后自动纠正；残余误差仍可用「字幕同步」手动微调。
+- 字幕与标题同步基于「`/api/live-clock` 单次校准 + `MediaElement.Position` 播放进度」；若该端点暂时不可用会回退墙钟（此时略超前），恢复后自动纠正；残余误差仍可用「字幕同步」手动微调。
 - 仅 `episode` 类型节目提供逐词字幕；音乐/过场会显示「♪ 标题」并无字幕。

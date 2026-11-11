@@ -44,11 +44,11 @@ public class KaraokeWord : INotifyPropertyChanged
 /// 播放器主视图模型。
 /// 职责：
 /// 1. 维护播放状态（IsPlaying）与音量。
-/// 2. 订阅 LiveRadioService，跟踪当前节目。
-/// 3. 在播放时用“本地播放计时 + 节目起始时间”推算节目内已播秒数，
-///    据此从字幕计时中定位当前正在发音的词，并高亮整句。
-/// 说明：字幕同步使用本地播放经过时间（Stopwatch），与网站一致，
-/// 可避免设备时钟偏差；网络缓冲带来的固定延迟可通过 SubtitleOffsetSeconds 微调。
+/// 2. 订阅 LiveRadioService，跟踪节目时间轴。
+/// 3. 把「MediaElement 播放进度」映射为「当前听到的节目时刻」，
+///    由它同时驱动标题与卡拉OK逐词高亮，保证两者都与音频严格同步。
+/// 说明：播放进度用 MediaElement.Position（真实播放位置），不用 Stopwatch 墙钟——
+/// 直播流一旦缓冲/卡顿，墙钟会继续走而音频不会，字幕和标题就会越跑越快。
 /// </summary>
 public class RadioViewModel : INotifyPropertyChanged, IDisposable
 {
@@ -57,13 +57,24 @@ public class RadioViewModel : INotifyPropertyChanged, IDisposable
     private readonly System.Timers.Timer _karaokeTimer;
 
     private readonly Stopwatch _sw = new();
-    private List<WordTiming>? _words;
+    private readonly object _clockGate = new();
+    private IReadOnlyList<WordTiming>? _words;
+    /// <summary>当前显示的这一句（turn）包含的词，按顺序排列；用于把“当前词”换算成句中位置。</summary>
+    private List<WordTiming>? _turnWords;
     private int _currentTurn = -1;
     private string? _anchoredEntryId;
 
-    // 字幕与音频对齐：用服务器 /api/live-clock 返回的真实节目时刻锚定，而非本地墙钟。
-    // 因为直播流存在服务端缓冲延迟（约 10~15 秒），直接按墙钟算会让字幕比实际听到的音频快这么多。
-    private DateTimeOffset _programmeAtAnchor = DateTimeOffset.UtcNow;
+    // ---- 字幕/标题同步核心：把「音频播放进度」映射到「节目时刻」 ----
+    // 网站（app.js: livePlaybackNow）的做法是：接流时用 /api/live-clock 拿到 programmeAt，
+    // 之后 programmeNow = programmeAt + audio.currentTime，即完全由音频播放进度推进。
+    // 好处：音频卡顿/缓冲时字幕和标题跟着一起停，不会越播越快。
+    // 旧实现用 Stopwatch（墙钟）推进、且每 30 秒用 programmeAt - 墙钟重新校准，
+    // 每次都把服务端的缓冲区长度叠加进锚点 → 字幕与标题越来越超前（本次修复的问题）。
+    private TimeSpan _position;                 // MediaElement.Position：真实播放进度
+    private bool _positionReliable;             // 收到过真实的 Position 才认为可用
+    private TimeSpan _positionZero;             // 映射零点（播放进度侧）
+    private DateTimeOffset _programmeAtZero = DateTimeOffset.UtcNow; // 映射零点（节目时刻侧）
+    private bool _clockCalibrated;
     private static readonly string _connectionId = Guid.NewGuid().ToString("N");
     private CancellationTokenSource? _calCts;
     private bool _recalibrateNow;
@@ -178,24 +189,49 @@ public class RadioViewModel : INotifyPropertyChanged, IDisposable
 
     // ---- 播放控制（由页面在 MediaElement 实际开始/暂停时回调） ----
 
-    /// <summary>页面在 MediaElement 首次真正开始播放后调用：重置并锚定计时、启动字幕。</summary>
+    /// <summary>页面在 MediaElement 首次真正开始播放后调用：锚定计时、启动字幕。</summary>
     public void NotifyPlaybackStarted()
     {
         if (!IsPlaying) IsPlaying = true;
         IsLiveAvailable = _live.IsAvailable;
-        Reanchor(_live.Current);
+
+        // 从服务器给出的 current 起步；随后 TickKaraoke 会按“实际听到的时刻”自动纠正。
+        if (_live.Current is { } cur) SwitchEntry(cur);
+
+        lock (_clockGate)
+        {
+            _sw.Restart(); // 仅作为 Position 不可用时的兜底计时
+            if (!_clockCalibrated)
+            {
+                // 还没拿到服务器时钟：先用墙钟兜底（会略超前），校准到达后自动纠正，
+                // 否则会拿构造时刻当零点，节目时刻直接偏掉几分钟。
+                _programmeAtZero = DateTimeOffset.UtcNow;
+                _positionZero = _positionReliable ? _position : TimeSpan.Zero;
+            }
+        }
+
         if (!_karaokeTimer.Enabled) _karaokeTimer.Start();
         StartClockCalibration();
     }
 
-    /// <summary>页面在 MediaElement 从暂停恢复播放后调用：直播流暂停后恢复会跳到“新的直播边缘”，
-    /// 本地计时已失准，故重置计时并以墙钟兜底，立即触发一次时钟校准对齐到真实节目时刻。</summary>
+    /// <summary>页面在 MediaElement 从暂停恢复播放后调用：直播流恢复可能跳到“新的直播边缘”，
+    /// 先保持原映射不动（Position 连续时无需跳变），并立即触发一次时钟校准纠正跳边。</summary>
     public void ResumePlayback()
     {
         if (!IsPlaying) IsPlaying = true;
-        _programmeAtAnchor = DateTimeOffset.UtcNow;
-        _sw.Reset();
-        _sw.Start();
+
+        lock (_clockGate)
+        {
+            // 只有走兜底计时（Position 不可用）时才需要平移零点，保证节目时刻连续。
+            if (!_positionReliable)
+            {
+                var now = _programmeAtZero + (_sw.Elapsed - _positionZero);
+                _sw.Restart();
+                _positionZero = TimeSpan.Zero;
+                _programmeAtZero = now;
+            }
+        }
+
         _recalibrateNow = true;
     }
 
@@ -211,6 +247,43 @@ public class RadioViewModel : INotifyPropertyChanged, IDisposable
         IsPlaying = false;
         _sw.Stop();
         StatusMessage = $"播放失败：{message}";
+    }
+
+    /// <summary>
+    /// 页面在 MediaElement.PositionChanged 时调用（可能在非 UI 线程）。
+    /// 这是字幕/标题的时间基准：只有真实播放进度才能反映“用户此刻听到的是哪一段音频”。
+    /// </summary>
+    public void OnPlaybackPositionChanged(TimeSpan position)
+    {
+        if (position < TimeSpan.Zero) return;
+
+        lock (_clockGate)
+        {
+            // Position 停在 0 说明这个实现根本没推进播放位置（不能当作可信进度，
+            // 否则字幕会卡在第一句不动），只记录、继续用 Stopwatch 兜底。
+            if (position == TimeSpan.Zero)
+            {
+                _position = position;
+                return;
+            }
+
+            TimeSpan oldProgress = _positionReliable ? _position : _sw.Elapsed;
+
+            // 首次拿到真实进度、或进度大幅回退（流重连）都属于“断点”，
+            // 平移零点以保持节目时刻连续，避免字幕跳变。
+            bool discontinuity = !_positionReliable
+                                 || oldProgress - position > TimeSpan.FromSeconds(2);
+
+            _position = position;
+            if (!discontinuity) return;
+
+            _positionZero += position - oldProgress;
+            bool wasReliable = _positionReliable;
+            _positionReliable = true;
+
+            // 回退说明直播流重连过，需要重新向服务器校准一次。
+            if (wasReliable) _recalibrateNow = true;
+        }
     }
 
     private void TogglePlay()
@@ -229,31 +302,27 @@ public class RadioViewModel : INotifyPropertyChanged, IDisposable
     private void OnCurrentChanged(object? sender, LiveEntry? entry) => OnCurrentChanged(entry);
     private void OnCurrentChanged(LiveEntry? entry)
     {
-        ProgrammeTitle = entry?.Title ?? "Slow English FM";
-        NextTitle = _live.Next is { Count: > 0 } ? _live.Next[0].Title ?? string.Empty : string.Empty;
         Listeners = _live.Listeners;
         IsLiveAvailable = _live.IsAvailable;
 
-        bool isEpisode = entry is { Type: "episode" }
-                         && !string.IsNullOrEmpty(entry.RunId)
-                         && !string.IsNullOrEmpty(entry.Kind);
-        ShowKaraoke = isEpisode && _words is { Count: > 0 };
+        // 播放中：标题与字幕一律由“实际播放进度”驱动（见 TickKaraoke），
+        // 不能跟着服务器的 current 走 —— 服务器的 current 已包含流缓冲，会比听到的音频超前。
+        if (IsPlaying) return;
 
-        if (IsPlaying)
-        {
-            Reanchor(entry);
-        }
-        else
-        {
-            // 尚未播放：清空字幕，等待播放时再锚定并加载。
-            _words = null;
-            _currentTurn = -1;
-            _anchoredEntryId = entry?.Id;
-            ClearTurnWords();
-            StatusMessage = isEpisode
-                ? "已就绪，点击播放开始收听并同步字幕"
-                : (string.IsNullOrEmpty(entry?.Title) ? "电台暂未播出，请稍候…" : $"♪ {entry!.Title}");
-        }
+        _anchoredEntryId = entry?.Id;
+        _words = null;
+        _currentTurn = -1;
+        _lastActiveIndex = -1;
+        ClearTurnWords();
+
+        ProgrammeTitle = string.IsNullOrWhiteSpace(entry?.Title) ? "Slow English FM" : entry!.Title!;
+        NextTitle = _live.Next is { Count: > 0 } ? _live.Next[0].Title ?? string.Empty : string.Empty;
+
+        bool isEpisode = IsEpisode(entry);
+        ShowKaraoke = false;
+        StatusMessage = isEpisode
+            ? "已就绪，点击播放开始收听并同步字幕"
+            : (string.IsNullOrEmpty(entry?.Title) ? "电台暂未播出，请稍候…" : $"♪ {entry!.Title}");
     }
 
     private void OnLiveError(object? sender, string message)
@@ -262,27 +331,26 @@ public class RadioViewModel : INotifyPropertyChanged, IDisposable
             StatusMessage = $"连接电台出错：{message}";
     }
 
-    /// <summary>重新锚定到某个节目：重置本地计时、加载字幕计时。
-    /// 锚定前先捕获“当前真实节目时刻”，使跨节目切换连续、字幕不跳变。</summary>
-    private void Reanchor(LiveEntry? entry)
+    private static bool IsEpisode(LiveEntry? entry) =>
+        entry is { Type: "episode" }
+        && !string.IsNullOrEmpty(entry.RunId)
+        && !string.IsNullOrEmpty(entry.Kind);
+
+    /// <summary>
+    /// 切换到某个节目：更新标题、清空上一集的字幕并加载这一集的逐词计时。
+    /// 注意这里不再重置节目时钟 —— 时钟是连续的，跨节目切换时字幕应平滑接续。
+    /// </summary>
+    private void SwitchEntry(LiveEntry entry)
     {
-        if (entry is null) return;
-
         _anchoredEntryId = entry.Id;
-
-        // 在重置计时前捕获当前真实节目时刻，随后把锚点设回它，保证连续。
-        var trueNow = _programmeAtAnchor + _sw.Elapsed;
-        _sw.Reset();
-        _sw.Start();
-        _programmeAtAnchor = trueNow;
-
-        bool isEpisode = entry.Type == "episode"
-                         && !string.IsNullOrEmpty(entry.RunId)
-                         && !string.IsNullOrEmpty(entry.Kind);
-        ShowKaraoke = isEpisode;
         _currentTurn = -1;
+        _lastActiveIndex = -1;
         _words = null;
         ClearTurnWords();
+        UpdateTitles(entry);
+
+        bool isEpisode = IsEpisode(entry);
+        ShowKaraoke = isEpisode;
 
         if (!isEpisode)
         {
@@ -291,12 +359,75 @@ public class RadioViewModel : INotifyPropertyChanged, IDisposable
         }
 
         StatusMessage = "正在加载字幕…";
-        _ = LoadTimingsAsync(entry.RunId!, entry.Kind!);
+        _ = LoadTimingsAsync(entry.RunId!, entry.Kind!, entry.Id);
+    }
+
+    private void UpdateTitles(LiveEntry entry)
+    {
+        ProgrammeTitle = string.IsNullOrWhiteSpace(entry.Title) ? "Slow English FM" : entry.Title!;
+        NextTitle = NextAfter(entry)?.Title ?? string.Empty;
+    }
+
+    /// <summary>时间轴上排在 entry 之后的下一个“像节目”的条目（跳过转场/台呼这类碎片）。</summary>
+    private LiveEntry? NextAfter(LiveEntry entry)
+    {
+        var timeline = _live.Timeline;
+        for (int i = 0; i < timeline.Count - 1; i++)
+        {
+            if (timeline[i].Id != entry.Id) continue;
+
+            for (int j = i + 1; j < timeline.Count; j++)
+            {
+                var t = timeline[j].Type;
+                if (t is "transition" or "station-id" or "programme-jingle") continue;
+                return timeline[j];
+            }
+            return null;
+        }
+        return null;
+    }
+
+    // ---- 时间基准 ----
+
+    /// <summary>当前“播放进度”：优先用 MediaElement.Position，拿不到时退回 Stopwatch 兜底。</summary>
+    private TimeSpan ProgressNow()
+    {
+        lock (_clockGate)
+            return _positionReliable ? _position : _sw.Elapsed;
+    }
+
+    /// <summary>当前听到的音频所对应的节目时刻（网站 livePlaybackNow 的等价实现）。</summary>
+    private DateTimeOffset ProgrammeNow()
+    {
+        lock (_clockGate)
+        {
+            var progress = _positionReliable ? _position : _sw.Elapsed;
+            return _programmeAtZero + (progress - _positionZero);
+        }
+    }
+
+    /// <summary>在时间轴上定位“此刻正在播出的条目”；时间轴还没数据时退回服务器的 current。</summary>
+    private LiveEntry? EntryAt(DateTimeOffset now)
+    {
+        // 未校准时节目时刻还不准（墙钟会略超前），先沿用服务器 current，等校准后再按进度定位，
+        // 避免刚开播时标题在 current / next 之间来回跳。
+        if (!_clockCalibrated)
+            return _live.Current;
+
+        var timeline = _live.Timeline;
+        LiveEntry? found = null;
+        foreach (var e in timeline)
+        {
+            if (e.StartsAt <= now) found = e;
+            else break; // 时间轴已按 StartsAt 升序
+        }
+        return found ?? _live.Current;
     }
 
     /// <summary>
-    /// 启动后台时钟校准：轮询 /api/live-clock，把内部节目时间轴对齐到服务器真实节目时刻
-    /// （该值已包含直播流的服务端缓冲延迟）。校准成功后每 30 秒复校一次，纠正时钟漂移/重缓冲。
+    /// 启动后台时钟校准。与网站一致：**只在接流时校准一次**（拿到 programmeAt 作为
+    /// 「零播放进度 = 该节目时刻」的基准），之后完全由音频播放进度推进。
+    /// 仅在校准失败、暂停恢复、检测到流重连时重新校准。
     /// </summary>
     private void StartClockCalibration()
     {
@@ -308,59 +439,81 @@ public class RadioViewModel : INotifyPropertyChanged, IDisposable
     private async Task CalibrateClockAsync(CancellationToken ct)
     {
         TimeSpan backoff = TimeSpan.FromMilliseconds(500);
+
         while (!ct.IsCancellationRequested)
         {
-            if (!IsPlaying || !_sw.IsRunning)
+            if (!IsPlaying)
             {
-                try { await Task.Delay(TimeSpan.FromMilliseconds(500), ct).ConfigureAwait(false); }
-                catch (OperationCanceledException) { break; }
+                if (!await DelayAsync(TimeSpan.FromMilliseconds(500), ct).ConfigureAwait(false)) break;
                 continue;
             }
 
-            // 恢复播放后立刻复校，并复位退避。
-            if (_recalibrateNow)
-                backoff = TimeSpan.FromMilliseconds(500);
+            // 已校准且没有被要求复校：空转等待（不再周期性重算，避免把缓冲区叠加进锚点）。
+            if (_clockCalibrated && !_recalibrateNow)
+            {
+                if (!await DelayAsync(TimeSpan.FromSeconds(1), ct).ConfigureAwait(false)) break;
+                continue;
+            }
 
+            // 用“请求发出瞬间的播放进度”与 programmeAt 配对，误差最小。
+            var progressAtRequest = ProgressNow();
             var programmeAt = await _live.GetProgrammeAtAsync(_connectionId).ConfigureAwait(false);
             if (ct.IsCancellationRequested) break;
 
             if (programmeAt.HasValue)
             {
-                // 无缝对齐：把服务器节目时刻减去“已播放时长”，得到计时起点对应的节目时刻。
-                // 锚点写入调度到主线程，避免与 TickKaraoke（主线程）读 _programmeAtAnchor 发生撕裂读。
-                var anchor = programmeAt.Value - _sw.Elapsed;
-                MainThread.BeginInvokeOnMainThread(() => _programmeAtAnchor = anchor);
-                _recalibrateNow = false;
+                // 零点写入调度到主线程，避免与 TickKaraoke 的读取交错产生撕裂读。
+                MainThread.BeginInvokeOnMainThread(() =>
+                {
+                    lock (_clockGate)
+                    {
+                        _programmeAtZero = programmeAt.Value;
+                        _positionZero = progressAtRequest;
+                    }
+                    _clockCalibrated = true;
+                    _recalibrateNow = false;
+                });
                 backoff = TimeSpan.FromMilliseconds(500);
-                try { await Task.Delay(TimeSpan.FromSeconds(30), ct).ConfigureAwait(false); }
-                catch (OperationCanceledException) { break; }
             }
             else
             {
-                try { await Task.Delay(backoff, ct).ConfigureAwait(false); }
-                catch (OperationCanceledException) { break; }
+                // 连接尚未就绪（{"error":"Connection not ready"}）：像网站一样退避重试。
+                if (!await DelayAsync(backoff, ct).ConfigureAwait(false)) break;
                 backoff = TimeSpan.FromMilliseconds(Math.Min(backoff.TotalMilliseconds * 2, 5000));
             }
         }
     }
 
-    private async Task LoadTimingsAsync(string runId, string kind)
+    private static async Task<bool> DelayAsync(TimeSpan delay, CancellationToken ct)
+    {
+        try
+        {
+            await Task.Delay(delay, ct).ConfigureAwait(false);
+            return true;
+        }
+        catch (OperationCanceledException)
+        {
+            return false;
+        }
+    }
+
+    private async Task LoadTimingsAsync(string runId, string kind, string? expectedEntryId)
     {
         var words = await _timings.GetTimingsAsync(runId, kind).ConfigureAwait(false);
-        if (words is null)
-        {
-            // 仍播放中且仍是同一节目才提示；否则忽略。
-            if (_anchoredEntryId is not null)
-                MainThread.BeginInvokeOnMainThread(() =>
-                {
-                    if (IsPlaying) StatusMessage = "暂无字幕计时，继续收听中…";
-                });
-            return;
-        }
 
         await MainThread.InvokeOnMainThreadAsync(() =>
         {
-            _words = words.ToList();
+            // 加载期间节目可能已经切换，丢弃过期结果。
+            if (expectedEntryId is not null && _anchoredEntryId != expectedEntryId) return;
+
+            if (words is null or { Count: 0 })
+            {
+                // 少数节目确实没有逐词计时文件，保持收听即可，不打断。
+                if (IsPlaying) StatusMessage = "暂无字幕计时，继续收听中…";
+                return;
+            }
+
+            _words = words;
             ShowKaraoke = true;
             StatusMessage = string.Empty;
             _currentTurn = -1; // 强制下一帧重建当前句
@@ -371,18 +524,25 @@ public class RadioViewModel : INotifyPropertyChanged, IDisposable
 
     private void TickKaraoke()
     {
-        if (!IsPlaying || _words is null or { Count: 0 })
-            return;
+        if (!IsPlaying) return;
 
-        var entry = _live.Current;
-        if (entry is null)
-            return;
+        // 1) 用“此刻听到的节目时刻”在时间轴上定位节目（而不是服务器的 current），
+        //    这样标题、字幕与音频始终是同一时刻的一致视图。
+        var now = ProgrammeNow();
+        var entry = EntryAt(now);
+        if (entry is null) return;
 
-        // 字幕进度 = “当前真实节目时刻(经服务器时钟校准) − 节目起始时间 + 音频偏移 − 手动微调”。
-        double elapsed = (_programmeAtAnchor.UtcDateTime - entry.StartsAt).TotalSeconds
+        if (entry.Id != _anchoredEntryId)
+            SwitchEntry(entry);
+        else
+            UpdateTitles(entry);
+
+        // 2) 逐词高亮（仅 episode 有逐词计时）。
+        if (_words is null or { Count: 0 }) return;
+
+        double elapsed = Math.Max(0, (now - entry.StartsAt).TotalSeconds)
                          + entry.AudioOffsetSeconds
-                         - SubtitleOffsetSeconds
-                         + _sw.Elapsed.TotalSeconds;
+                         - SubtitleOffsetSeconds;
         var active = _words.LastOrDefault(w => w.Start <= elapsed + 0.08);
         int turn = active?.Turn ?? 0;
 
@@ -392,11 +552,14 @@ public class RadioViewModel : INotifyPropertyChanged, IDisposable
             RebuildTurn(turn);
         }
 
-        int idx = active?.Index ?? -1;
+        // 关键：不能用 word.index 定位——服务端给的 index 多为“全文件累计序号”，
+        // 个别文件又按句重置，两种口径混用会导致除第一句外整句都不高亮。
+        // 这里改为“该词在本句列表中的位置”。
+        int idx = IndexInTurn(active);
         for (int i = 0; i < CurrentTurnWords.Count; i++)
         {
             CurrentTurnWords[i].IsActive = i == idx;
-            CurrentTurnWords[i].IsPast = i < idx;
+            CurrentTurnWords[i].IsPast = idx >= 0 && i < idx;
         }
 
         if (idx != _lastActiveIndex)
@@ -409,12 +572,25 @@ public class RadioViewModel : INotifyPropertyChanged, IDisposable
     private void RebuildTurn(int turn)
     {
         ClearTurnWords();
-        foreach (var w in _words!.Where(w => w.Turn == turn))
+        _turnWords = _words!.Where(w => w.Turn == turn).ToList();
+        foreach (var w in _turnWords)
             CurrentTurnWords.Add(new KaraokeWord { Text = w.Text });
+    }
+
+    /// <summary>当前词在本句中的位置（0 起）；不属于本句时返回 -1。</summary>
+    private int IndexInTurn(WordTiming? active)
+    {
+        if (active is null || _turnWords is null) return -1;
+        for (int i = 0; i < _turnWords.Count; i++)
+        {
+            if (ReferenceEquals(_turnWords[i], active)) return i;
+        }
+        return -1;
     }
 
     private void ClearTurnWords()
     {
+        _turnWords = null;
         if (CurrentTurnWords.Count > 0)
             CurrentTurnWords.Clear();
     }

@@ -19,6 +19,12 @@ public interface ILiveRadioService
     /// <summary>当前在线听众数。</summary>
     int Listeners { get; }
 
+    /// <summary>
+    /// 节目时间轴（最近的历史条目 + 当前条目 + 即将播出的条目，按 StartsAt 升序）。
+    /// 播放器用“当前听到的节目时刻”在这条时间轴上定位节目，从而让标题与音频保持同步。
+    /// </summary>
+    IReadOnlyList<LiveEntry> Timeline { get; }
+
     /// <summary>当前条目（用于字幕）发生变化时触发，参数为新的条目（可能为 null）。</summary>
     event EventHandler<LiveEntry?>? CurrentChanged;
 

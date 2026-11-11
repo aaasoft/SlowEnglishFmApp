@@ -35,6 +35,8 @@ public partial class MainPage : ContentPage
         _player.StateChanged += OnMediaStateChanged;
         _player.MediaFailed += OnMediaFailed;
         _player.MediaEnded += OnMediaEnded;
+        // 真实播放进度是字幕/标题的唯一时间基准（墙钟会在缓冲、卡顿时跑偏）。
+        _player.PositionChanged += OnMediaPositionChanged;
         Grid.SetRow(_player, 0);
         Grid.SetRowSpan(_player, 3);
         RootGrid.Children.Add(_player);
@@ -116,6 +118,11 @@ public partial class MainPage : ContentPage
         // 直播流通常不会自然结束；若结束则按停止处理，便于重新连接。
         _playbackBegun = false;
         _vm.NotifyPlaybackPaused();
+    }
+
+    private void OnMediaPositionChanged(object? sender, MediaPositionChangedEventArgs e)
+    {
+        _vm.OnPlaybackPositionChanged(e.Position);
     }
 
     private async Task ScrollToActiveWordAsync()

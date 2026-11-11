@@ -9,7 +9,11 @@ public class WordTiming
     /// <summary>所属句子序号（0 起）。</summary>
     public int Turn { get; set; }
 
-    /// <summary>该词在所属句子中的序号（0 起）。</summary>
+    /// <summary>
+    /// 服务端给出的词序号。注意：它并不可靠——多数文件里是**全文件累计序号**
+    /// （turn 0 为 0..13、turn 1 为 14..65），个别文件又会按句重置为 0。
+    /// 因此不要用它做"句中第几个词"的比对，请用词在所属 turn 内的先后顺序。
+    /// </summary>
     public int Index { get; set; }
 
     public string Text { get; set; } = string.Empty;
