@@ -15,9 +15,16 @@
             <Setter Property="BackgroundColor" Value="Transparent" />
             <Setter Property="FontSize" Value="40" />
             <Setter Property="FontFamily" Value="OpenSansRegular" />
-            <Setter Property="LineHeight" Value="1.25" />
-            <Setter Property="Margin" Value="6,4" />
-            <Setter Property="Padding" Value="10,4" />
+            <Setter Property="LineHeight" Value="1.15" />
+            <!--
+                单词之间的视觉空隙 = 相邻两个词的 (Margin + Padding) 之和。
+                原来是 6 + 10 = 16（左右各一份，合计 32dp），词间像被拉开一样松散；
+                现在 1 + 6 = 7（合计 14dp），接近英文正常词距（约 0.25em），更像正常排版。
+                注意：Padding 同时决定高亮背景块的内边距，横向不宜小于 5，
+                否则色块会贴住字母显得拥挤。
+            -->
+            <Setter Property="Margin" Value="1,2" />
+            <Setter Property="Padding" Value="6,2" />
             <Setter Property="HorizontalTextAlignment" Value="Center" />
             <!--
                 NoWrap 是关键：Label 必须按「完整单词宽度」参与排版。
