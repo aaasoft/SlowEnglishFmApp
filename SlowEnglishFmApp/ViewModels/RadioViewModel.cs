@@ -87,8 +87,6 @@ public class RadioViewModel : INotifyPropertyChanged, IDisposable
     private int _listeners;
     private bool _showKaraoke;
     private string _statusMessage = "点击播放按钮，开始收听实时广播";
-    private double _volume = 1.0;
-    private double _subtitleOffsetSeconds;
     private bool _isLiveAvailable = true;
     private int _activeWordIndex = -1;
     private int _lastActiveIndex = -1;
@@ -99,7 +97,6 @@ public class RadioViewModel : INotifyPropertyChanged, IDisposable
         _timings = timings;
 
         TogglePlayCommand = new Command(TogglePlay);
-        NudgeOffsetCommand = new Command<double>(NudgeOffset);
 
         _live.CurrentChanged += OnCurrentChanged;
         _live.Error += OnLiveError;
@@ -126,7 +123,6 @@ public class RadioViewModel : INotifyPropertyChanged, IDisposable
     }
 
     public Command TogglePlayCommand { get; }
-    public Command<double> NudgeOffsetCommand { get; }
 
     /// <summary>实时音频流地址（带当前连接 id）。页面每次（重新）开始播放时把它设为 MediaElement 的源。</summary>
     public string StreamUrl
@@ -184,19 +180,6 @@ public class RadioViewModel : INotifyPropertyChanged, IDisposable
     {
         get => _statusMessage;
         set => Set(ref _statusMessage, value);
-    }
-
-    public double Volume
-    {
-        get => _volume;
-        set => Set(ref _volume, Math.Clamp(value, 0, 1));
-    }
-
-    /// <summary>字幕人工同步偏移（秒）。网络缓冲导致的固定延迟可用它补偿（负值让字幕提前）。</summary>
-    public double SubtitleOffsetSeconds
-    {
-        get => _subtitleOffsetSeconds;
-        set => Set(ref _subtitleOffsetSeconds, Math.Clamp(value, -30, 30));
     }
 
     public bool IsLiveAvailable
@@ -345,11 +328,6 @@ public class RadioViewModel : INotifyPropertyChanged, IDisposable
     {
         IsPlaying = !IsPlaying;
         // 页面侦听 IsPlaying 变化来调用 MediaElement.Play()/Pause()。
-    }
-
-    private void NudgeOffset(double delta)
-    {
-        SubtitleOffsetSeconds += delta;
     }
 
     // ---- 当前节目变化 ----
@@ -596,8 +574,7 @@ public class RadioViewModel : INotifyPropertyChanged, IDisposable
         if (_words is null or { Count: 0 }) return;
 
         double elapsed = Math.Max(0, (now - entry.StartsAt).TotalSeconds)
-                         + entry.AudioOffsetSeconds
-                         - SubtitleOffsetSeconds;
+                         + entry.AudioOffsetSeconds;
         var active = _words.LastOrDefault(w => w.Start <= elapsed + 0.08);
         int turn = active?.Turn ?? 0;
 

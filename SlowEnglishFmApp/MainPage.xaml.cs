@@ -34,9 +34,9 @@ public partial class MainPage : ContentPage
             IsVisible = false,
             ShouldAutoPlay = false,
             ShouldShowPlaybackControls = false,
+            Volume = 1.0,   // 音量固定为原始响度，由系统音量键调节
         };
         _player.BindingContext = _vm;
-        _player.SetBinding(MediaElement.VolumeProperty, nameof(RadioViewModel.Volume));
         _player.MediaOpened += OnMediaOpened;
         _player.StateChanged += OnMediaStateChanged;
         _player.MediaFailed += OnMediaFailed;
