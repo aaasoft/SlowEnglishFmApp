@@ -63,6 +63,7 @@ public partial class MainPage : ContentPage
         RootGrid.Children.Add(_player);
 
         _vm.PropertyChanged += OnViewModelPropertyChanged;
+        _vm.TurnChanged += OnTurnChanged;
 
         SizeChanged += (_, _) => ApplyLayoutMode();
     }
@@ -150,8 +151,6 @@ public partial class MainPage : ContentPage
     {
         if (e.PropertyName == nameof(RadioViewModel.IsPlaying))
             HandlePlayState(_vm.IsPlaying);
-        else if (e.PropertyName == nameof(RadioViewModel.CurrentTurnWords))
-            HandleTurnRebuilt();
         else if (e.PropertyName == nameof(RadioViewModel.ActiveWordIndex))
             _ = ScrollToActiveWordAsync();
         else if (e.PropertyName == nameof(RadioViewModel.ProgrammeTitle))
@@ -161,6 +160,8 @@ public partial class MainPage : ContentPage
             MainThread.BeginInvokeOnMainThread(() => _player.MetadataTitle = title);
         }
     }
+
+    private void OnTurnChanged(object? sender, EventArgs e) => HandleTurnRebuilt();
 
     /// <summary>
     /// 换句（整句字幕被替换）时调用。
@@ -173,7 +174,10 @@ public partial class MainPage : ContentPage
         _turnResetPending = true;
         _scrolling = false;
         _pendingScroll = false;
-        _ = ResetScrollToTopAsync();
+
+        // 换句重建和滚动归零若挤在同一帧，这一帧会明显变长（就是「字幕顿一下」）。
+        // 把归零推到下一轮消息循环：重建完成后新内容已有正确高度，滚一次就到位。
+        Dispatcher.Dispatch(() => _ = ResetScrollToTopAsync());
     }
 
     private async Task ResetScrollToTopAsync()

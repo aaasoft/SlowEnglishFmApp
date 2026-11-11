@@ -13,7 +13,17 @@ namespace SlowEnglishFmApp.ViewModels;
 /// <summary>单个被显示的词，用于在界面上做“已读/正在读/未读”三种状态的可视化。</summary>
 public class KaraokeWord : INotifyPropertyChanged
 {
-    public string Text { get; init; } = string.Empty;
+    private string _text = string.Empty;
+
+    /// <summary>
+    /// 词文本。可写是为了换句时能复用已有的词控件（只改文字、不重建视图），
+    /// 见 RadioViewModel.RebuildTurn —— 换句重建整句 Label 是卡顿的主要来源之一。
+    /// </summary>
+    public string Text
+    {
+        get => _text;
+        set => Set(ref _text, value);
+    }
 
     private bool _isActive;
     public bool IsActive
@@ -59,6 +69,8 @@ public class RadioViewModel : INotifyPropertyChanged, IDisposable
     private readonly Stopwatch _sw = new();
     private readonly object _clockGate = new();
     private IReadOnlyList<WordTiming>? _words;
+    /// <summary>按句号索引的词表（加载时一次建好）：换句时 O(1) 取词，不用每次扫描整集。</summary>
+    private Dictionary<int, List<WordTiming>>? _wordsByTurn;
     /// <summary>当前显示的这一句（turn）包含的词，按顺序排列；用于把“当前词”换算成句中位置。</summary>
     private List<WordTiming>? _turnWords;
     private ObservableCollection<KaraokeWord> _currentTurnWords = new();
@@ -112,6 +124,11 @@ public class RadioViewModel : INotifyPropertyChanged, IDisposable
     private bool _isLiveAvailable = true;
     private int _activeWordIndex = -1;
     private int _lastActiveIndex = -1;
+    /// <summary>已有一帧高亮更新排在主线程队列里（1 = 有），用于防止卡顿时 tick 堆积。</summary>
+    private int _tickPending;
+    /// <summary>上一次 EntryAt 命中的时间轴下标与条目 Id，用作逐帧定位的快路径。</summary>
+    private int _entryHintIndex = -1;
+    private string? _entryHintId;
 
     public RadioViewModel(ILiveRadioService live, ITimingsService timings)
     {
@@ -123,9 +140,22 @@ public class RadioViewModel : INotifyPropertyChanged, IDisposable
         _live.CurrentChanged += OnCurrentChanged;
         _live.Error += OnLiveError;
 
-        _karaokeTimer = new System.Timers.Timer(200);
+        _karaokeTimer = new System.Timers.Timer(120);
         _karaokeTimer.AutoReset = true;
-        _karaokeTimer.Elapsed += (_, _) => MainThread.BeginInvokeOnMainThread(TickKaraoke);
+        _karaokeTimer.Elapsed += (_, _) =>
+        {
+            // 防堆积：主线程若正忙（换句重建、布局、GC），上一帧还没跑完就跳过本次投递。
+            // 否则卡顿结束后会一次性补跑多个 tick —— 每个 tick 都按「此刻的节目时刻」重算，
+            // 补跑纯属浪费，而且会进一步拖慢主线程，形成雪崩：表现为画面顿一下、
+            // 高亮直接跳过两三个词。
+            if (Interlocked.Exchange(ref _tickPending, 1) == 1) return;
+
+            MainThread.BeginInvokeOnMainThread(() =>
+            {
+                try { TickKaraoke(); }
+                finally { Volatile.Write(ref _tickPending, 0); }
+            });
+        };
 
         // 立即同步一次当前节目信息（服务可能已先轮询到数据）。
         OnCurrentChanged(_live.Current);
@@ -305,6 +335,7 @@ public class RadioViewModel : INotifyPropertyChanged, IDisposable
 
         _anchoredEntryId = null;
         _words = null;
+        _wordsByTurn = null;
         _wordsEnd = 0;
         _currentTurn = -1;
         _lastActiveIndex = -1;
@@ -391,6 +422,7 @@ public class RadioViewModel : INotifyPropertyChanged, IDisposable
 
         _anchoredEntryId = entry?.Id;
         _words = null;
+        _wordsByTurn = null;
         _wordsEnd = 0;
         _currentTurn = -1;
         _lastActiveIndex = -1;
@@ -427,6 +459,7 @@ public class RadioViewModel : INotifyPropertyChanged, IDisposable
         _currentTurn = -1;
         _lastActiveIndex = -1;
         _words = null;
+        _wordsByTurn = null;
         _wordsEnd = 0;
         ClearTurnWords();
         UpdateTitles(entry);
@@ -510,12 +543,35 @@ public class RadioViewModel : INotifyPropertyChanged, IDisposable
             return _live.Current;
 
         var timeline = _live.Timeline;
-        LiveEntry? found = null;
-        foreach (var e in timeline)
+
+        // 绝大多数帧命中的还是同一条节目：拿上次的结果和它的下一条比两次即可，
+        // 命中就完全跳过整条时间轴的遍历（每帧省掉上百次比较）。
+        int hint = _entryHintIndex;
+        if (hint >= 0 && hint < timeline.Count
+            && timeline[hint].Id == _entryHintId
+            && timeline[hint].StartsAt <= now
+            && (hint + 1 >= timeline.Count || timeline[hint + 1].StartsAt > now))
         {
-            if (e.StartsAt <= now) found = e;
-            else break; // 时间轴已按 StartsAt 升序
+            return timeline[hint];
         }
+
+        LiveEntry? found = null;
+        int foundIndex = -1;
+        for (int i = 0; i < timeline.Count; i++)
+        {
+            if (timeline[i].StartsAt <= now)
+            {
+                found = timeline[i];
+                foundIndex = i;
+            }
+            else
+            {
+                break; // 时间轴已按 StartsAt 升序
+            }
+        }
+
+        _entryHintIndex = foundIndex;
+        _entryHintId = found?.Id;
         return found ?? _live.Current;
     }
 
@@ -637,8 +693,14 @@ public class RadioViewModel : INotifyPropertyChanged, IDisposable
                 return;
             }
 
-            _words = words;
-            _wordsEnd = words.Max(w => w.End);
+            // 二分定位「当前词」要求按开始时间升序：计时文件通常是升序的，
+            // 这里做一次性排序兜底，避免个别文件乱序导致高亮一直卡在某个词。
+            var sorted = words.OrderBy(w => w.Start).ToList();
+
+            _words = sorted;
+            _wordsByTurn = sorted.GroupBy(w => w.Turn)
+                                 .ToDictionary(g => g.Key, g => g.ToList());
+            _wordsEnd = sorted.Max(w => w.End);
             _lastAdvanceTick = Stopwatch.GetTimestamp();
             ShowKaraoke = true;
             StatusMessage = string.Empty;
@@ -660,8 +722,7 @@ public class RadioViewModel : INotifyPropertyChanged, IDisposable
 
         if (entry.Id != _anchoredEntryId)
             SwitchEntry(entry);
-        else
-            UpdateTitles(entry);
+        // 同一个节目内标题不会变，不必每帧重算 NextAfter（那是整条时间轴的二次扫描）。
 
         // 2) 逐词高亮（仅 episode 有逐词计时）。
         if (_words is null or { Count: 0 }) return;
@@ -680,27 +741,25 @@ public class RadioViewModel : INotifyPropertyChanged, IDisposable
             _recalibrateNow = true;
         }
 
-        var active = _words.LastOrDefault(w => w.Start <= elapsed + 0.08);
+        var active = WordAt(elapsed);
         int turn = active?.Turn ?? 0;
 
         if (turn != _currentTurn)
         {
             _currentTurn = turn;
             RebuildTurn(turn);
+            // 换句后句内下标全部作废：旧索引不能拿去更新新集合，否则会把新句里
+            // 恰好同位置的词误标成「已读」。
+            _lastActiveIndex = -1;
         }
 
         // 关键：不能用 word.index 定位——服务端给的 index 多为“全文件累计序号”，
         // 个别文件又按句重置，两种口径混用会导致除第一句外整句都不高亮。
         // 这里改为“该词在本句列表中的位置”。
         int idx = IndexInTurn(active);
-        for (int i = 0; i < CurrentTurnWords.Count; i++)
-        {
-            CurrentTurnWords[i].IsActive = i == idx;
-            CurrentTurnWords[i].IsPast = idx >= 0 && i < idx;
-        }
-
         if (idx != _lastActiveIndex)
         {
+            ApplyHighlight(_lastActiveIndex, idx);
             _lastActiveIndex = idx;
             _lastAdvanceTick = Stopwatch.GetTimestamp();
             ActiveWordIndex = idx;
@@ -722,13 +781,91 @@ public class RadioViewModel : INotifyPropertyChanged, IDisposable
 
     private void RebuildTurn(int turn)
     {
-        _turnWords = _words!.Where(w => w.Turn == turn).ToList();
+        _turnWords = _wordsByTurn is not null && _wordsByTurn.TryGetValue(turn, out var words)
+            ? words
+            : new List<WordTiming>();
+
+        var existing = CurrentTurnWords;
+
+        // 词数相同时直接复用现有视图，只换文字并复位状态：
+        // 换句时重建整句 Label 会触发一次完整的测量与布局（低端车机上就是「卡一下」），
+        // 复用则只产生几次文本变更，几乎不触发重排。
+        if (existing.Count > 0 && existing.Count == _turnWords.Count)
+        {
+            for (int i = 0; i < existing.Count; i++)
+            {
+                existing[i].Text = _turnWords[i].Text;
+                existing[i].IsActive = false;
+                existing[i].IsPast = false;
+            }
+            _lastActiveIndex = -1;
+            TurnChanged?.Invoke(this, EventArgs.Empty);
+            return;
+        }
 
         // 一次性替换整句集合（而不是逐个 Add）：BindableLayout 只重建一次子视图，
         // 换句时不会因为「先清空、再一个个加」而产生多次布局与闪烁。
         var items = new ObservableCollection<KaraokeWord>(
             _turnWords.Select(w => new KaraokeWord { Text = w.Text }));
         CurrentTurnWords = items;
+        _lastActiveIndex = -1;
+        TurnChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    /// <summary>换句了（整句文字已变化）。页面据此把字幕滚动位置归零，避免新句从旧偏移处开始显示。</summary>
+    public event EventHandler? TurnChanged;
+
+    /// <summary>
+    /// 在整集词表里二分定位「此刻正在发音（或刚读完）的词」。
+    /// 原先每帧用 LINQ 线性扫描整集（可达上千词），会产生大量闭包分配，
+    /// GC 抖动在低端设备上就是可感知的一顿。
+    /// </summary>
+    private WordTiming? WordAt(double elapsed)
+    {
+        var words = _words;
+        if (words is null || words.Count == 0) return null;
+
+        double t = elapsed + 0.08;   // 稍微提前一点，词一开口就亮起来
+        int lo = 0, hi = words.Count - 1, best = -1;
+        while (lo <= hi)
+        {
+            int mid = lo + ((hi - lo) >> 1);
+            if (words[mid].Start <= t) { best = mid; lo = mid + 1; }
+            else hi = mid - 1;
+        }
+        return best >= 0 ? words[best] : null;
+    }
+
+    /// <summary>
+    /// 只更新「状态真正变化」的词，而不是每帧把整句所有词重新赋值。
+    /// 一次跨越多个词（主线程被占用后追上进度）时，中间被越过的词一次性标为已读，
+    /// 不做逐个补亮 —— 补亮会让画面闪一串，反倒更像卡了。
+    /// </summary>
+    private void ApplyHighlight(int from, int to)
+    {
+        var list = CurrentTurnWords;
+        int n = list.Count;
+        if (n == 0) return;
+
+        if (from >= 0 && from < n)
+        {
+            list[from].IsActive = false;
+            // 回退（to < from）时不要把停下的那个词标成已读
+            list[from].IsPast = to < 0 || from < to;
+        }
+
+        if (to < 0 || to >= n) return;
+
+        int lo = from < 0 ? 0 : Math.Min(from, to);
+        int hi = Math.Max(from, to);
+        for (int i = lo; i <= hi; i++)
+        {
+            if (i == from || i == to) continue;
+            list[i].IsPast = i < to;
+        }
+
+        list[to].IsPast = false;
+        list[to].IsActive = true;
     }
 
     /// <summary>当前词在本句中的位置（0 起）；不属于本句时返回 -1。</summary>
@@ -745,8 +882,13 @@ public class RadioViewModel : INotifyPropertyChanged, IDisposable
     private void ClearTurnWords()
     {
         _turnWords = null;
+        _lastActiveIndex = -1;
         if (CurrentTurnWords.Count > 0)
+        {
             CurrentTurnWords = new ObservableCollection<KaraokeWord>();
+            // 清空同样要让页面把滚动归零，否则下次开播的第一句会从上次的偏移处开始显示。
+            TurnChanged?.Invoke(this, EventArgs.Empty);
+        }
     }
 
     // ---- INotifyPropertyChanged ----
