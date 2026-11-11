@@ -20,6 +20,10 @@ public partial class MainPage : ContentPage
     private bool _turnResetPending;   // 刚换句，需要先把滚动位置归零
     private bool _stopping;           // 正在停止，防止 Stop 事件重入
 
+    // 布局模式：null = 尚未确定；true = 横屏紧凑，false = 竖屏常规
+    private bool? _compact;
+
+
     public MainPage()
     {
         InitializeComponent();
@@ -48,6 +52,81 @@ public partial class MainPage : ContentPage
         RootGrid.Children.Add(_player);
 
         _vm.PropertyChanged += OnViewModelPropertyChanged;
+
+        SizeChanged += (_, _) => ApplyLayoutMode();
+    }
+
+    protected override void OnAppearing()
+    {
+        base.OnAppearing();
+        ApplyLayoutMode();
+    }
+
+    /// <summary>
+    /// 按屏幕方向切换布局密度。
+    ///
+    /// 手机/车机横屏时可用高度只有竖屏的一半左右，而顶部台标+标题、底部播放按钮都是固定高度，
+    /// 结果「*」行的字幕卡片被压成一条窄缝，ScrollView 只能露出一条被裁切的文字
+    /// （现象：横屏看不到字幕）。这里在横屏下把上下两块收紧（缩小内边距、字号、按钮高度），
+    /// 把省下来的高度全部让给字幕。
+    /// </summary>
+    private void ApplyLayoutMode()
+    {
+        if (Width <= 0 || Height <= 0) return;
+
+        bool compact = Width > Height;      // 宽 > 高 ⇒ 横屏
+        if (_compact == compact) return;
+        _compact = compact;
+
+        if (compact)
+        {
+            TopPanel.Padding = new Thickness(16, 6, 16, 2);
+            OnAirBadge.Padding = new Thickness(8, 2);
+            OnAirLabel.FontSize = 12;
+            ListenersLabel.FontSize = 12;
+            TitlePanel.Margin = new Thickness(0, 6, 0, 0);
+            ProgrammeLabel.FontSize = 20;
+            ProgrammeLabel.MaxLines = 1;
+            ProgrammeLabel.LineBreakMode = LineBreakMode.TailTruncation;
+            NextLabel.FontSize = 12;
+
+            SubtitleBorder.Margin = new Thickness(12, 2);
+            SubtitleBorder.Padding = new Thickness(10, 6);
+
+            BottomPanel.Padding = new Thickness(16, 2, 16, 10);
+            StatusLabel.FontSize = 12;
+            PlayButton.FontSize = 20;
+            PlayButton.HeightRequest = 56;
+            PlayButton.CornerRadius = 28;
+            PlayButton.Margin = new Thickness(0, 2);
+        }
+        else
+        {
+            TopPanel.Padding = new Thickness(24, 18, 24, 8);
+            OnAirBadge.Padding = new Thickness(10, 4);
+            OnAirLabel.FontSize = 16;
+            ListenersLabel.FontSize = 16;
+            TitlePanel.Margin = new Thickness(0, 12, 0, 0);
+            ProgrammeLabel.FontSize = 30;
+            ProgrammeLabel.MaxLines = 2;
+            ProgrammeLabel.LineBreakMode = LineBreakMode.WordWrap;
+            NextLabel.FontSize = 16;
+
+            SubtitleBorder.Margin = new Thickness(16, 4);
+            SubtitleBorder.Padding = new Thickness(20);
+
+            BottomPanel.Padding = new Thickness(24, 10, 24, 24);
+            StatusLabel.FontSize = 16;
+            PlayButton.FontSize = 28;
+            PlayButton.HeightRequest = 84;
+            PlayButton.CornerRadius = 42;
+            PlayButton.Margin = new Thickness(0, 6);
+        }
+
+        // 视口尺寸变了，旧的字幕滚动偏移不再有效，回到顶部由接下来的高亮重新定位。
+        WordsHost.InvalidateMeasure();
+        _turnResetPending = true;
+        _ = ResetScrollToTopAsync();
     }
 
     private void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e)

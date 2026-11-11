@@ -33,67 +33,75 @@
     <Grid x:Name="RootGrid" RowDefinitions="Auto, *, Auto" ColumnDefinitions="*">
 
         <!-- 顶部：台标 + 当前节目 + 在线人数 -->
-        <Grid Grid.Row="0" Padding="24,18,24,8" ColumnDefinitions="*,Auto" RowDefinitions="Auto,Auto,Auto">
+        <Grid x:Name="TopPanel" Grid.Row="0" Padding="24,18,24,8" ColumnDefinitions="*" RowDefinitions="Auto,Auto">
             <HorizontalStackLayout Grid.Column="0" Spacing="14" VerticalOptions="Center">
-                <Border Padding="10,4" StrokeShape="RoundRectangle 8" BackgroundColor="#B00020" Stroke="Transparent">
+                <Border x:Name="OnAirBadge" Padding="10,4" StrokeShape="RoundRectangle 8" BackgroundColor="#B00020" Stroke="Transparent">
                     <HorizontalStackLayout Spacing="8">
                         <Ellipse WidthRequest="10" HeightRequest="10" Fill="#FF5252" />
-                        <Label Text="ON AIR" TextColor="White" FontSize="16" FontAttributes="Bold" />
+                        <Label x:Name="OnAirLabel" Text="ON AIR" TextColor="White" FontSize="16" FontAttributes="Bold" />
                     </HorizontalStackLayout>
                 </Border>
-                <Label Text="{Binding Listeners, StringFormat='&#128266; {0}'}"
+                <Label x:Name="ListenersLabel" Text="{Binding Listeners, StringFormat='&#128266; {0}'}"
                        TextColor="#9AA4B2" FontSize="16" VerticalOptions="Center" />
             </HorizontalStackLayout>
 
-            <VerticalStackLayout Grid.Column="0" Grid.Row="1" Spacing="2" Margin="0,12,0,0">
-                <Label Text="{Binding ProgrammeTitle}"
+            <VerticalStackLayout x:Name="TitlePanel" Grid.Column="0" Grid.Row="1" Spacing="2" Margin="0,12,0,0">
+                <Label x:Name="ProgrammeLabel" Text="{Binding ProgrammeTitle}"
                        TextColor="White" FontSize="30" FontAttributes="Bold"
                        LineBreakMode="WordWrap" MaxLines="2" />
-                <Label Text="{Binding NextTitle, StringFormat='接下来：{0}'}"
+                <Label x:Name="NextLabel" Text="{Binding NextTitle, StringFormat='接下来：{0}'}"
                        TextColor="#7E8794" FontSize="16"
                        IsVisible="{Binding NextTitle, Converter={StaticResource StringNotEmptyConverter}}" />
             </VerticalStackLayout>
         </Grid>
 
         <!-- 中部：卡拉OK 字幕 -->
-        <Border Grid.Row="1" Margin="16,4" StrokeShape="RoundRectangle 16"
-                Stroke="#1C2530" BackgroundColor="#141A21" Padding="20">
-            <ScrollView x:Name="SubtitleScroll">
-                <FlexLayout x:Name="WordsHost"
-                            BindableLayout.ItemsSource="{Binding CurrentTurnWords}"
-                            Wrap="Wrap" JustifyContent="Center" AlignItems="Center" AlignContent="Start">
-                    <BindableLayout.ItemTemplate>
-                        <DataTemplate x:DataType="vm:KaraokeWord">
-                            <!--
-                                高亮只用「颜色/背景」表达，绝不能改 FontSize / FontAttributes / Margin：
-                                那会让整句 Label 重新测量、FlexLayout 重新换行，每换一个词就整句重排，
-                                是滚动与高亮卡顿的主因（词还会因此跳行）。
-                            -->
-                            <Label Style="{StaticResource KaraokeLabel}" Text="{Binding Text}"
-                                   FlexLayout.Shrink="0">
-                                <Label.Triggers>
-                                    <DataTrigger TargetType="Label" Binding="{Binding IsPast}" Value="True">
-                                        <Setter Property="TextColor" Value="#5B6675" />
-                                    </DataTrigger>
-                                    <DataTrigger TargetType="Label" Binding="{Binding IsActive}" Value="True">
-                                        <Setter Property="TextColor" Value="#0E1116" />
-                                        <Setter Property="BackgroundColor" Value="#FFC83D" />
-                                    </DataTrigger>
-                                </Label.Triggers>
-                            </Label>
-                        </DataTemplate>
-                    </BindableLayout.ItemTemplate>
-                </FlexLayout>
+        <Border x:Name="SubtitleBorder" Grid.Row="1" Margin="16,4" StrokeShape="RoundRectangle 16"
+                Stroke="#1C2530" BackgroundColor="#141A21" Padding="20"
+                MinimumHeightRequest="96">
+            <ScrollView x:Name="SubtitleScroll" Orientation="Vertical" VerticalScrollBarVisibility="Never">
+                <!--
+                    外面套一层 Grid：把 FlexLayout 的可用宽度钉死为视口宽度。
+                    直接把 FlexLayout 作为 ScrollView 内容时，横竖屏切换后宽度约束可能失真，
+                    整句会排成一行并横向溢出被裁掉（现象：文字左右两边都被切）。
+                -->
+                <Grid HorizontalOptions="Fill" VerticalOptions="Start">
+                    <FlexLayout x:Name="WordsHost"
+                                BindableLayout.ItemsSource="{Binding CurrentTurnWords}"
+                                Wrap="Wrap" JustifyContent="Center" AlignItems="Center" AlignContent="Start">
+                        <BindableLayout.ItemTemplate>
+                            <DataTemplate x:DataType="vm:KaraokeWord">
+                                <!--
+                                    高亮只用「颜色/背景」表达，绝不能改 FontSize / FontAttributes / Margin：
+                                    那会让整句 Label 重新测量、FlexLayout 重新换行，每换一个词就整句重排，
+                                    是滚动与高亮卡顿的主因（词还会因此跳行）。
+                                -->
+                                <Label Style="{StaticResource KaraokeLabel}" Text="{Binding Text}"
+                                       FlexLayout.Shrink="0">
+                                    <Label.Triggers>
+                                        <DataTrigger TargetType="Label" Binding="{Binding IsPast}" Value="True">
+                                            <Setter Property="TextColor" Value="#5B6675" />
+                                        </DataTrigger>
+                                        <DataTrigger TargetType="Label" Binding="{Binding IsActive}" Value="True">
+                                            <Setter Property="TextColor" Value="#0E1116" />
+                                            <Setter Property="BackgroundColor" Value="#FFC83D" />
+                                        </DataTrigger>
+                                    </Label.Triggers>
+                                </Label>
+                            </DataTemplate>
+                        </BindableLayout.ItemTemplate>
+                    </FlexLayout>
+                </Grid>
             </ScrollView>
         </Border>
 
         <!-- 底部：状态 / 播放控制 -->
-        <Grid Grid.Row="2" Padding="24,10,24,24" RowDefinitions="Auto,Auto" ColumnDefinitions="*">
-            <Label Grid.Row="0" Text="{Binding StatusMessage}"
+        <Grid x:Name="BottomPanel" Grid.Row="2" Padding="24,10,24,24" RowDefinitions="Auto,Auto" ColumnDefinitions="*">
+            <Label x:Name="StatusLabel" Grid.Row="0" Text="{Binding StatusMessage}"
                    TextColor="#9AA4B2" FontSize="16" HorizontalTextAlignment="Center"
                    IsVisible="{Binding StatusMessage, Converter={StaticResource StringNotEmptyConverter}}" />
 
-            <Button Grid.Row="1" Command="{Binding TogglePlayCommand}"
+            <Button x:Name="PlayButton" Grid.Row="1" Command="{Binding TogglePlayCommand}"
                     FontSize="28" FontAttributes="Bold"
                     HeightRequest="84" CornerRadius="42" Margin="0,6"
                     BackgroundColor="#1F6FEB" TextColor="White">
