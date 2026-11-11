@@ -48,11 +48,12 @@
 	</PropertyGroup>
 
 	<ItemGroup>
-		<!-- App Icon -->
-		<MauiIcon Include="Resources\AppIcon\appicon.svg" ForegroundFile="Resources\AppIcon\appiconfg.svg" Color="#512BD4" />
+		<!-- App Icon：米白底 + 品牌图形（地球 + 声波）。前景内容缩在自适应图标安全区内，
+		     避免被启动器的圆形/圆角遮罩裁掉；文字留给应用名，不在图标里出现。 -->
+		<MauiIcon Include="Resources\AppIcon\appicon.png" ForegroundFile="Resources\AppIcon\appiconfg.png" Color="#FDFAF2" />
 
-		<!-- Splash Screen -->
-		<MauiSplashScreen Include="Resources\Splash\splash.svg" Color="#512BD4" BaseSize="128,128" />
+		<!-- Splash Screen：完整品牌 logo（含字标），不参与遮罩裁切 -->
+		<MauiSplashScreen Include="Resources\Splash\splash.png" Color="#FDFAF2" BaseSize="200,200" />
 
 		<!-- Images -->
 		<MauiImage Include="Resources\Images\*" />
