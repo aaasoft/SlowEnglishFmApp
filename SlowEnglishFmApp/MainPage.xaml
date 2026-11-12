@@ -39,8 +39,8 @@
 
     <Grid x:Name="RootGrid" RowDefinitions="Auto, *, Auto" ColumnDefinitions="*">
 
-        <!-- 顶部：台标 + 当前节目 + 在线人数（右侧留位给横屏的圆形播放/停止按钮） -->
-        <Grid x:Name="TopPanel" Grid.Row="0" Padding="24,18,24,8" ColumnDefinitions="*,Auto" RowDefinitions="Auto,Auto">
+        <!-- 顶部：台标 + 当前节目 + 在线人数（右侧留位给字号按钮和横屏的圆形播放/停止按钮） -->
+        <Grid x:Name="TopPanel" Grid.Row="0" Padding="24,18,24,8" ColumnDefinitions="*,Auto,Auto" RowDefinitions="Auto,Auto">
             <HorizontalStackLayout Grid.Column="0" Spacing="14" VerticalOptions="Center">
                 <Border x:Name="OnAirBadge" Padding="10,4" StrokeShape="RoundRectangle 8" BackgroundColor="#B00020" Stroke="Transparent">
                     <HorizontalStackLayout Spacing="8">
@@ -73,13 +73,34 @@
             </VerticalStackLayout>
 
             <!--
+                字号切换按钮：循环 小 / 中 / 大 三档（横竖屏均可见）。
+                车机上驾驶位离屏幕远、默认字号只显示 7 行左右太小，
+                最大档（大）在车机横屏下约显示 3 行，远距离也看得清。
+                样式刻意与右侧蓝色播放按钮区分（深色底、更小），避免误触播放。
+            -->
+            <Border x:Name="FontSizeButton" Grid.Column="1" Grid.Row="0" Grid.RowSpan="2"
+                    WidthRequest="48" HeightRequest="48"
+                    StrokeShape="RoundRectangle 24" Stroke="Transparent"
+                    BackgroundColor="#232B36"
+                    HorizontalOptions="End" VerticalOptions="Center"
+                    Margin="8,0,0,0"
+                    InputTransparent="False">
+                <Border.GestureRecognizers>
+                    <TapGestureRecognizer Tapped="OnFontSizeToggled" />
+                </Border.GestureRecognizers>
+                <Label x:Name="FontSizeLabel" Text="小"
+                       TextColor="#D7DEE8" FontSize="18" FontAttributes="Bold"
+                       HorizontalOptions="Center" VerticalOptions="Center" />
+            </Border>
+
+            <!--
                 横屏专用：右上角圆形播放/停止按钮。
                 横屏高度紧张，把控制按钮挪到顶部台标右侧，底部就能整块让给字幕。
                 竖屏仍用底部的大号按钮（本控件在竖屏下隐藏）。
                 图标用 Path / BoxView 绘制：emoji 字符（▶ / ⏹）在 Android 上会被渲染成彩色
                 方形emoji，放进圆形按钮里很难看。
             -->
-            <Border x:Name="CompactPlayButton" Grid.Column="1" Grid.Row="0" Grid.RowSpan="2"
+            <Border x:Name="CompactPlayButton" Grid.Column="2" Grid.Row="0" Grid.RowSpan="2"
                     IsVisible="False"
                     WidthRequest="64" HeightRequest="64"
                     StrokeShape="RoundRectangle 32" Stroke="Transparent"

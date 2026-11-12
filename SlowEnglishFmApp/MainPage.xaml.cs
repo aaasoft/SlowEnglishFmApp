@@ -5,6 +5,7 @@ using CommunityToolkit.Maui.Views;
 using Microsoft.Maui;
 using Microsoft.Maui.Devices;
 using Microsoft.Maui.Dispatching;   // IDispatcher.DispatchDelayed
+using Microsoft.Maui.Essentials;    // Preferences（字号档位持久化）
 using SlowEnglishFmApp.ViewModels;
 
 namespace SlowEnglishFmApp;
@@ -30,6 +31,23 @@ public partial class MainPage : ContentPage
 
     // 布局模式：null = 尚未确定；true = 横屏紧凑，false = 竖屏常规
     private bool? _compact;
+
+    // ---------------------------------------------------------------------------
+    // 字幕字号档位（右上角「小/中/大」按钮循环切换）
+    //
+    // 档位按「车机横屏下的可见行数」标定：车机视口高度下默认 40 号约显示 7 行，
+    // 驾驶位距离较远时偏小。行高 ≈ FontSize × LineHeight(1.15) + 纵向 Padding/Margin(约 8dp)，
+    // 由此推得：64 号约 4~5 行，92 号约 3 行 —— 最大档正是车机远距离观看的目标。
+    // 档位写入 Preferences，重启后保留（车机上每次启动都重按一遍会很烦）。
+    // ---------------------------------------------------------------------------
+    private static readonly (string Label, double Size)[] KaraokeFontLevels =
+    {
+        ("小", 40),
+        ("中", 64),
+        ("大", 92),
+    };
+    private const string FontSizePrefKey = "karaoke_font_size";
+    private int _fontLevelIndex;
 
 
     public MainPage()
@@ -75,6 +93,13 @@ public partial class MainPage : ContentPage
         SubtitleScroll.SizeChanged += (_, _) => Dispatcher.Dispatch(UpdateBottomSpacer);
 
         SizeChanged += (_, _) => ApplyLayoutMode();
+
+        // 恢复上次选择的字号档位（车机上默认 40 偏小，切到「中/大」后应一直生效）。
+        // 此时字幕尚未创建，ApplyKaraokeFontSize 只会改共享样式，无副作用。
+        double savedSize = Preferences.Get(FontSizePrefKey, KaraokeFontLevels[0].Size);
+        _fontLevelIndex = Array.FindIndex(KaraokeFontLevels, l => Math.Abs(l.Size - savedSize) < 0.5);
+        if (_fontLevelIndex < 0) _fontLevelIndex = 0;
+        ApplyKaraokeFontSize(KaraokeFontLevels[_fontLevelIndex].Size);
     }
 
     protected override void OnAppearing()
@@ -159,6 +184,67 @@ public partial class MainPage : ContentPage
         _scrollAnimating = false;
         UpdateBottomSpacer();
         _ = ResetScrollToTopAsync();
+    }
+
+    /// <summary>
+    /// 点击右上角「小/中/大」按钮：循环切换字幕字号档位并持久化。
+    /// </summary>
+    private void OnFontSizeToggled(object? sender, TappedEventArgs e)
+    {
+        _fontLevelIndex = (_fontLevelIndex + 1) % KaraokeFontLevels.Length;
+        var level = KaraokeFontLevels[_fontLevelIndex];
+        Preferences.Set(FontSizePrefKey, level.Size);
+        ApplyKaraokeFontSize(level.Size);
+    }
+
+    /// <summary>
+    /// 把字幕字号应用到整句（共享样式 + 已存在的词 Label），并重新定位滚动。
+    ///
+    /// 字号变化会让每个词重新测量、整句重新换行 —— 与横竖屏切换是同类「视口级」变化：
+    /// 1. 改共享样式 KaraokeLabel 的 FontSize：BindableLayout 后续新建的词 Label
+    ///    在应用样式时读取的就是新值（注意：MAUI 不会把样式变更推回已创建的元素，
+    ///    所以已有的 Label 必须显式赋值）；
+    /// 2. 已存在的词 Label 直接设置本地 FontSize（本地值优先于样式，二者保持一致）；
+    /// 3. 作废在途的平滑滚动（旧行 Y 已全部失效），等待重新布局后把激活行重新居中。
+    /// </summary>
+    private void ApplyKaraokeFontSize(double size)
+    {
+        FontSizeLabel.Text = KaraokeFontLevels[_fontLevelIndex].Label;
+
+        if (Resources.TryGetValue("KaraokeLabel", out object? res) && res is Style karaokeStyle)
+        {
+            foreach (Setter setter in karaokeStyle.Setters)
+            {
+                if (setter.Property == Label.FontSizeProperty)
+                {
+                    setter.Value = size;
+                    break;
+                }
+            }
+        }
+
+        foreach (View child in WordsHost.Children)
+        {
+            if (child is Label wordLabel)
+                wordLabel.FontSize = size;
+        }
+
+        // 行高与换行全部失效：作废滚动状态，强制重新测量。
+        _scrollAnimId++;
+        _scrollAnimating = false;
+        _pendingScrollY = double.NaN;
+        _lastScrolledLineY = double.NaN;   // 清掉「行已居中」缓存，允许重新滚到激活行
+        WordsHost.InvalidateMeasure();
+        UpdateBottomSpacer();
+
+        // 等重新布局完成（新行高/新换行生效）后，把当前激活行重新滚到视口正中。
+        // 不重置回顶部：用户只是调字号，正读到哪一句应该继续看哪一句。
+        Dispatcher.DispatchDelayed(TimeSpan.FromMilliseconds(180), () =>
+        {
+            UpdateBottomSpacer();
+            if (_vm.IsPlaying)
+                _ = ScrollToActiveWordAsync();
+        });
     }
 
     private void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e)
