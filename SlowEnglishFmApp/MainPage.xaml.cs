@@ -98,6 +98,8 @@ public partial class MainPage : ContentPage
         _player.MediaFailed += OnMediaFailed;
         _player.MediaEnded += OnMediaEnded;
         // 真实播放进度是字幕/标题的唯一时间基准（墙钟会在缓冲、卡顿时跑偏）。
+        // 只用事件推进（不直读 _player.Position）：事件值与直读值存在固有延迟差，
+        // 两路混用会通过软校正互相拉扯，时间轴锯齿振荡（字幕乱跳的教训）。
         _player.PositionChanged += OnMediaPositionChanged;
         Grid.SetRow(_player, 0);
         Grid.SetRowSpan(_player, 3);

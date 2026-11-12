@@ -98,7 +98,7 @@
         StrokeShape="RoundRectangle 24" Stroke="Transparent"
         BackgroundColor="#232B36"
         VerticalOptions="Center">
-                    <Border.GestureRecognizers>
+                    <Border.GestureRecognizers> 
                         <TapGestureRecognizer Tapped="OnFontSizeToggled" />
                     </Border.GestureRecognizers>
                     <Label x:Name="FontSizeLabel" Text="小"

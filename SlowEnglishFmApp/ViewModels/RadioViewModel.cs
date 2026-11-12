@@ -86,11 +86,6 @@ public class RadioViewModel : INotifyPropertyChanged, IDisposable
     private TimeSpan _position;                 // MediaElement.Position：真实播放进度
     private bool _positionReliable;             // 收到过真实的 Position 才认为可用
     private long _lastPositionTick;             // 上一次 Position「发生变化」的时刻（Stopwatch 时间戳）
-    /// <summary>
-    /// Position 多久没变化就认为停止上报。取值要大于媒体元素的上报周期（Android 上进度
-    /// 常以 1 秒为粒度上报，同一秒内数值不变属正常），2.5 秒可以避免正常上报被误判为停更。
-    /// </summary>
-    private static readonly TimeSpan PositionStallGrace = TimeSpan.FromSeconds(2.5);
     private TimeSpan _positionZero;             // 映射零点（播放进度侧）
     private DateTimeOffset _programmeAtZero = DateTimeOffset.UtcNow; // 映射零点（节目时刻侧）
     private bool _clockCalibrated;
@@ -140,7 +135,10 @@ public class RadioViewModel : INotifyPropertyChanged, IDisposable
         _live.CurrentChanged += OnCurrentChanged;
         _live.Error += OnLiveError;
 
-        _karaokeTimer = new System.Timers.Timer(120);
+        // 60ms（≈16Hz）：tick 间隔直接决定高亮的响应延迟（平均一半、最坏一个周期）。
+        // 之前 120ms 时最坏迟到 0.12s；TickKaraoke 本身只有一次锁读 + 二分查找，
+        // 单帧开销远小于 1ms，低端车机也扛得住 16Hz。
+        _karaokeTimer = new System.Timers.Timer(60);
         _karaokeTimer.AutoReset = true;
         _karaokeTimer.Elapsed += (_, _) =>
         {
@@ -375,30 +373,43 @@ public class RadioViewModel : INotifyPropertyChanged, IDisposable
                 return;
             }
 
-            // 与“当前进度”比较：若之前处于 Position 停更、正在按真实时间外推，
-            // 那么恢复后的真实值与外推值之差才是真正需要补偿的断点。
+            // 断点判定必须看「原始值相对上一次原始值的跳变」，绝不能拿外推值比：
+            // 音频缓冲停顿时外推会跑到前面，恢复后原始值相对外推值"回退"数秒——
+            // 那只是缓冲恢复，若误判成重连会触发多余的重新校准，字幕直接跳到
+            // 服务器直播边缘（比实际听到的超前好几秒）= 字幕乱跳。
+            bool wasReliable = _positionReliable;
+            bool discontinuity = !wasReliable
+                                 || _position - position > TimeSpan.FromSeconds(2)    // 原始值回退：流重连
+                                 || position - _position > TimeSpan.FromSeconds(5);  // 原始值前跳
+
+            // 外推值（连续时间轴此刻的读数）：断点平移零点以它为基准，保证节目时刻不断档。
             TimeSpan oldProgress = _positionReliable ? EffectiveProgressLocked() : _sw.Elapsed;
 
             if (position != _position)
                 _lastPositionTick = Stopwatch.GetTimestamp();
 
-            // 首次拿到真实进度、或进度大幅跳变（流重连：回退到更早，直接跳到新的直播边缘）
-            // 都属于“断点”，平移零点以保持节目时刻连续，避免字幕跳变或停住。
-            bool discontinuity = !_positionReliable
-                                 || oldProgress - position > TimeSpan.FromSeconds(2)   // 回退
-                                 || position - oldProgress > TimeSpan.FromSeconds(5);  // 前跳
-
             _position = position;
-            if (!_positionReliable)
-                _lastPositionTick = Stopwatch.GetTimestamp();
-            if (!discontinuity) return;
-
-            _positionZero += position - oldProgress;
-            bool wasReliable = _positionReliable;
             _positionReliable = true;
 
-            // 回退说明直播流重连过，需要重新向服务器校准一次。
-            if (wasReliable) _recalibrateNow = true;
+            if (discontinuity)
+            {
+                _positionZero += position - oldProgress;
+
+                // 回退说明直播流重连过，需要重新向服务器校准一次。
+                if (wasReliable) _recalibrateNow = true;
+            }
+            else
+            {
+                // 软校正（限幅）：外推值与真实值有小偏差（上报延迟抖动）时只吸收一半，
+                // 且单次最多 150ms —— 时间轴始终连续，不会整词整句地回跳。
+                // 不限幅的话，缓冲恢复的数秒偏差会一次拉回，高亮大批回跳，看着就是乱跳。
+                double deltaMs = (position - oldProgress).TotalMilliseconds;
+                if (Math.Abs(deltaMs) > 25)
+                {
+                    double stepMs = Math.Clamp(deltaMs / 2, -150, 150);
+                    _positionZero += TimeSpan.FromMilliseconds(stepMs);
+                }
+            }
         }
     }
 
@@ -504,7 +515,9 @@ public class RadioViewModel : INotifyPropertyChanged, IDisposable
 
     // ---- 时间基准 ----
 
-    /// <summary>当前“播放进度”：优先用 MediaElement.Position，拿不到时退回 Stopwatch 兜底。</summary>
+    /// <summary>
+    /// 当前“播放进度”：优先用 MediaElement.Position，拿不到时退回 Stopwatch 兜底。
+    /// </summary>
     private TimeSpan ProgressNow()
     {
         lock (_clockGate)
@@ -513,18 +526,20 @@ public class RadioViewModel : INotifyPropertyChanged, IDisposable
 
     /// <summary>
     /// 计算当前进度（调用方必须已持有 _clockGate）。
-    /// 正常情况下就是 MediaElement.Position；但快速停止/重播、播放器内部重连等情况下
-    /// PositionChanged 可能直接不再上报，Position 会永久停在一个值上 —— 若继续用它，
-    /// 「节目时刻」就冻住了，字幕会卡在某个词不再推进。
-    /// 因此当 Position 超过一小段时间没有变化时，用真实时间对最后一次进度做外推，
-    /// 保证字幕仍以 1 倍速前进；Position 恢复后由断点检测自动重新对齐。
+    ///
+    /// PositionChanged 事件的粒度是数百毫秒，若直接用原始值，「节目时刻」就会以几百毫秒为
+    /// 台阶跳跃前进 —— 高亮不是迟半拍就是连跳几个词。所以只要拿到过可信进度，
+    /// 就始终「以最后一次已知进度为基点、按真实流逝时间外推」，每个 tick 都连续推进；
+    /// 新的真实进度到达后由 OnPlaybackPositionChanged 做软校正收敛，外推不会累积误差。
+    /// 音频真正缓冲停顿时外推会暂时跑前一点，恢复后由限幅的软校正平滑拉回 ——
+    /// 与网站（完全用 audio.currentTime，停顿即冻结）相比是可接受的取舍。
     /// </summary>
     private TimeSpan EffectiveProgressLocked()
     {
         if (!_positionReliable) return _sw.Elapsed;
 
         var stalled = Stopwatch.GetElapsedTime(_lastPositionTick);
-        return stalled <= PositionStallGrace ? _position : _position + stalled;
+        return _position + stalled;
     }
 
     /// <summary>当前听到的音频所对应的节目时刻（网站 livePlaybackNow 的等价实现）。</summary>
