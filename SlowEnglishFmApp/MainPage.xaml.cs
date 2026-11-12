@@ -50,6 +50,19 @@ public partial class MainPage : ContentPage
     private const string FontSizePrefKey = "karaoke_font_size";
     private int _fontLevelIndex;
 
+    // 词距的基准值（对应「小」档 40 号）：横向 1 + 6 ⇒ 相邻词间距 14dp ≈ 0.35em。
+    // 各档位按 size / 40 等比缩放这三组值，词距的 em 比例保持不变。
+    private const double KaraokeBaseFontSize = 40;
+    private const double WordMarginH = 1;      // Label.Margin 左右
+    private const double WordMarginV = 2;      // Label.Margin 上下
+    private const double WordPaddingH = 6;     // Label.Padding 左右（同时是高亮色块的内边距）
+    private const double WordPaddingV = 2;     // Label.Padding 上下
+
+    // 当前档位实际生效的排版参数（新建的词 Label 也从这里取值）
+    private double _wordFontSize = KaraokeFontLevels[0].Size;
+    private Thickness _wordMargin;
+    private Thickness _wordPadding;
+
 
     public MainPage()
     {
@@ -92,6 +105,14 @@ public partial class MainPage : ContentPage
         // 推到下一轮消息循环再改 HeightRequest：避免在布局周期内改需求引起重入布局。
         WordsHost.SizeChanged += (_, _) => Dispatcher.Dispatch(UpdateBottomSpacer);
         SubtitleScroll.SizeChanged += (_, _) => Dispatcher.Dispatch(UpdateBottomSpacer);
+
+        // BindableLayout 换句重建时会新建词 Label。它们从共享样式取排版参数，
+        // 这里再兜一层：无论样式变更有没有被新元素读到，新建的词都使用当前档位的字号与词距。
+        WordsHost.ChildAdded += (_, e) =>
+        {
+            if (e.Element is Label wordLabel)
+                ApplyWordTypography(wordLabel);
+        };
 
         SizeChanged += (_, _) => ApplyLayoutMode();
 
@@ -264,32 +285,29 @@ public partial class MainPage : ContentPage
     /// 把字幕字号应用到整句（共享样式 + 已存在的词 Label），并重新定位滚动。
     ///
     /// 字号变化会让每个词重新测量、整句重新换行 —— 与横竖屏切换是同类「视口级」变化：
-    /// 1. 改共享样式 KaraokeLabel 的 FontSize：BindableLayout 后续新建的词 Label
-    ///    在应用样式时读取的就是新值（注意：MAUI 不会把样式变更推回已创建的元素，
-    ///    所以已有的 Label 必须显式赋值）；
-    /// 2. 已存在的词 Label 直接设置本地 FontSize（本地值优先于样式，二者保持一致）；
+    /// 1. 改共享样式 KaraokeLabel 的 FontSize / Margin / Padding：BindableLayout 后续新建的
+    ///    词 Label 在应用样式时读取的就是新值（注意：MAUI 不会把样式变更推回已创建的元素，
+    ///    所以已有的 Label 必须显式赋值，见 ApplyWordTypography）；
+    /// 2. 词距必须跟着字号一起缩放，理由见 UpdateKaraokeStyle 的注释；
     /// 3. 作废在途的平滑滚动（旧行 Y 已全部失效），等待重新布局后把激活行重新居中。
     /// </summary>
     private void ApplyKaraokeFontSize(double size)
     {
         FontSizeLabel.Text = KaraokeFontLevels[_fontLevelIndex].Label;
 
-        if (Resources.TryGetValue("KaraokeLabel", out object? res) && res is Style karaokeStyle)
-        {
-            foreach (Setter setter in karaokeStyle.Setters)
-            {
-                if (setter.Property == Label.FontSizeProperty)
-                {
-                    setter.Value = size;
-                    break;
-                }
-            }
-        }
+        // 基准：字号 40 时 Margin(1,2) + Padding(6,2) ⇒ 相邻词间距 14dp ≈ 0.35em。
+        // 按同一比例缩放字号、边距，词距就始终维持 0.35em —— 视觉密度不随档位变化。
+        double k = size / KaraokeBaseFontSize;
+        _wordFontSize = size;
+        _wordMargin = new Thickness(WordMarginH * k, WordMarginV * k);
+        _wordPadding = new Thickness(WordPaddingH * k, WordPaddingV * k);
+
+        UpdateKaraokeStyle();
 
         foreach (View child in WordsHost.Children)
         {
             if (child is Label wordLabel)
-                wordLabel.FontSize = size;
+                ApplyWordTypography(wordLabel);
         }
 
         // 行高与换行全部失效：作废滚动状态，强制重新测量。
@@ -308,6 +326,46 @@ public partial class MainPage : ContentPage
             if (_vm.IsPlaying)
                 _ = ScrollToActiveWordAsync();
         });
+    }
+
+    /// <summary>
+    /// 单个词 Label 的排版参数（字号 + 词距）。本地值优先于样式，与样式中的值保持一致。
+    /// </summary>
+    private void ApplyWordTypography(Label label)
+    {
+        label.FontSize = _wordFontSize;
+        label.Margin = _wordMargin;
+        label.Padding = _wordPadding;
+    }
+
+    /// <summary>
+    /// 同步共享样式 KaraokeLabel 的 FontSize / Margin / Padding。
+    ///
+    /// 词与词的视觉间隙 = 相邻两个 Label 的 (Margin 横向 + Padding 横向) 之和。
+    /// 字号 40 时是 2 × (1 + 6) = 14dp ≈ 0.35em，接近英文正常词距；
+    /// 但 64 / 92 档若仍用 14dp，字母本身变宽了间隙却没变（0.35em ⇒ 0.15em），
+    /// 词与词就粘在一起 —— 所以边距必须与字号同比例缩放。
+    /// </summary>
+    private void UpdateKaraokeStyle()
+    {
+        if (!Resources.TryGetValue("KaraokeLabel", out object? res) || res is not Style style)
+            return;
+
+        foreach (Setter setter in style.Setters)
+        {
+            switch (setter.Property.PropertyName)
+            {
+                case nameof(Label.FontSize):
+                    setter.Value = _wordFontSize;
+                    break;
+                case nameof(View.Margin):
+                    setter.Value = _wordMargin;
+                    break;
+                case nameof(Label.Padding):
+                    setter.Value = _wordPadding;
+                    break;
+            }
+        }
     }
 
     private void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e)

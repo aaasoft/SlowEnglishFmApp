@@ -17,11 +17,12 @@
             <Setter Property="FontFamily" Value="OpenSansRegular" />
             <Setter Property="LineHeight" Value="1.15" />
             <!--
-                单词之间的视觉空隙 = 相邻两个词的 (Margin + Padding) 之和。
-                原来是 6 + 10 = 16（左右各一份，合计 32dp），词间像被拉开一样松散；
-                现在 1 + 6 = 7（合计 14dp），接近英文正常词距（约 0.25em），更像正常排版。
-                注意：Padding 同时决定高亮背景块的内边距，横向不宜小于 5，
-                否则色块会贴住字母显得拥挤。
+                单词之间的视觉空隙 = 相邻两个词的 (Margin + Padding) 之和：
+                40 号档是 2 × (1 + 6) = 14dp ≈ 0.35em，接近英文正常词距（约 0.25em 起）。
+                注意：下面 Margin / Padding / FontSize 只是「小」档的初值，
+                运行时会由 ApplyKaraokeFontSize() 按档位等比改写
+                （字号越大边距越大，否则 64/92 号下字母变宽、间隙不变，词会粘在一起）。
+                Padding 横向同时决定高亮色块的内边距，按比例放大后色块也不会贴住字母。
             -->
             <Setter Property="Margin" Value="1,2" />
             <Setter Property="Padding" Value="6,2" />
