@@ -54,25 +54,6 @@
             <HorizontalStackLayout x:Name="ButtonsPanel" Grid.Column="2" Grid.Row="0" Grid.RowSpan="2"
                                    Spacing="8" HorizontalOptions="End" VerticalOptions="Center">
                 <!--
-                    字号切换按钮：循环 小 / 中 / 大 三档（横竖屏均可见）。
-                    车机上驾驶位离屏幕远、默认字号只显示 7 行左右太小，
-                    最大档（大）在车机横屏下约显示 3 行，远距离也看得清。
-                    样式刻意与蓝色播放按钮区分（深色底），避免误触播放。
-                -->
-                <Border x:Name="FontSizeButton"
-                        WidthRequest="48" HeightRequest="48"
-                        StrokeShape="RoundRectangle 24" Stroke="Transparent"
-                        BackgroundColor="#232B36"
-                        VerticalOptions="Center">
-                    <Border.GestureRecognizers>
-                        <TapGestureRecognizer Tapped="OnFontSizeToggled" />
-                    </Border.GestureRecognizers>
-                    <Label x:Name="FontSizeLabel" Text="小"
-                           TextColor="#D7DEE8" FontSize="18" FontAttributes="Bold"
-                           HorizontalOptions="Center" VerticalOptions="Center" />
-                </Border>
-
-                <!--
                     横屏专用：圆形播放/停止按钮（竖屏用底部的大号按钮，本控件隐藏）。
                     图标用 Path / BoxView 绘制：emoji 字符（▶ / ⏹）在 Android 上会被渲染成彩色
                     方形emoji，放进圆形按钮里很难看。
@@ -104,6 +85,24 @@
                             </BoxView.Triggers>
                         </BoxView>
                     </Grid>
+                </Border>
+                <!--
+                    字号切换按钮：循环 小 / 中 / 大 三档（横竖屏均可见）。
+                    车机上驾驶位离屏幕远、默认字号只显示 7 行左右太小，
+                    最大档（大）在车机横屏下约显示 3 行，远距离也看得清。
+                    样式刻意与蓝色播放按钮区分（深色底），避免误触播放。
+                -->
+                <Border x:Name="FontSizeButton"
+        WidthRequest="48" HeightRequest="48"
+        StrokeShape="RoundRectangle 24" Stroke="Transparent"
+        BackgroundColor="#232B36"
+        VerticalOptions="Center">
+                    <Border.GestureRecognizers>
+                        <TapGestureRecognizer Tapped="OnFontSizeToggled" />
+                    </Border.GestureRecognizers>
+                    <Label x:Name="FontSizeLabel" Text="小"
+           TextColor="#D7DEE8" FontSize="18" FontAttributes="Bold"
+           HorizontalOptions="Center" VerticalOptions="Center" />
                 </Border>
             </HorizontalStackLayout>
 
