@@ -18,12 +18,18 @@ public partial class MainPage : ContentPage
     private bool _playbackBegun;
 
     // 字幕滚动控制
+    //
+    // 这里刻意不做「动画排队 / 动画中合并请求」那套状态机：只要有一个标志位没被复位，
+    // 后续所有滚动就只能排队、不再执行，表现为「字幕卡在某一行、激活词跑到屏幕外」（已复现两次）。
+    // 现在每次换行都直接下发平滑滚动：Android 的 smoothScrollTo 天然支持改目标（从当前位置续滚），
+    // 不会互相打断出抖动；即使某次滚动失败，下一个词也会再校正一次，不存在卡死状态。
     private bool _turnResetPending;        // 刚换句，需要先把滚动位置归零
-    private double _lastScrolledLineY = double.NaN;  // 上次滚动所针对的「行」（行顶 Y），行内换词不重复滚
-    private double _pendingScrollY = double.NaN;     // 平滑滚动进行中收到的新目标，动画结束后补一次
-    private bool _scrollAnimating;                   // 平滑滚动动画进行中
-    private int _scrollAnimId;                       // 动画序号：换句/停止时自增，作废在途的补滚
-    private const int ScrollAnimSettleMs = 260;      // 原生平滑滚动的时长估算，用于挡掉动画期间的重复滚动
+    private double _lastScrolledLineY = double.NaN;  // 上次滚到的「行」（行顶 Y），行内换词不重复滚
+    private double _lastScrollTarget = double.NaN;   // 上次下发的滚动目标，同一行同一目标不重复下发
+    private int _scrollFixBudget;                    // 每个新词允许的「滚动后校正」次数（防抖动）
+    private int _scrollEpoch;                        // 换句/换字号/转屏时自增，作废过期的校正回调
+    private const int ScrollVerifyDelayMs = 300;     // 判定平滑滚动已停下来的时间点（原生约 250ms）
+    private const int ScrollCallTimeoutMs = 600;     // 等原生滚动回执的上限，超时放弃等待（防止卡住调用方）
     private bool _stopping;           // 正在停止，防止 Stop 事件重入
     private int _attemptId;           // 播放请求序号：每次播放/停止 +1，用于作废过期的兜底检查
     private bool _hasPlayed;          // 本次会话是否真正到达过 Playing（区分「外部暂停」与「Play() 被吞」）
@@ -103,8 +109,10 @@ public partial class MainPage : ContentPage
         // 字幕内容的实际高度变化（换句、字体/视口变化）时重算底部留白，
         // 保证最后一行也能滚到视口正中。
         // 推到下一轮消息循环再改 HeightRequest：避免在布局周期内改需求引起重入布局。
-        WordsHost.SizeChanged += (_, _) => Dispatcher.Dispatch(UpdateBottomSpacer);
-        SubtitleScroll.SizeChanged += (_, _) => Dispatcher.Dispatch(UpdateBottomSpacer);
+        // 留白变化会改变可滚动范围：重算后必须重新定位一次激活行，否则大字号下行高变大、
+        // 滚动范围又还没跟上，激活词会停在视口下缘之外（「激活单词在屏幕外」）。
+        WordsHost.SizeChanged += (_, _) => Dispatcher.Dispatch(RefreshSpacerAndReposition);
+        SubtitleScroll.SizeChanged += (_, _) => Dispatcher.Dispatch(RefreshSpacerAndReposition);
 
         // BindableLayout 换句重建时会新建词 Label。它们从共享样式取排版参数，
         // 这里再兜一层：无论样式变更有没有被新元素读到，新建的词都使用当前档位的字号与词距。
@@ -249,13 +257,22 @@ public partial class MainPage : ContentPage
 
         // 视口尺寸变了，旧的字幕滚动偏移不再有效，回到顶部由接下来的高亮重新定位。
         WordsHost.InvalidateMeasure();
-        _turnResetPending = true;
-        _lastScrolledLineY = double.NaN;
-        _pendingScrollY = double.NaN;
-        _scrollAnimId++;
-        _scrollAnimating = false;
+        ResetScrollTracking();
         UpdateBottomSpacer();
         _ = ResetScrollToTopAsync();
+    }
+
+    /// <summary>
+    /// 作废全部滚动记忆（换句、换字号、转屏、停止时调用）：
+    /// 行缓存、目标缓存、校正预算、在途的校正回调一起清掉，让下一次高亮重新定位一次。
+    /// </summary>
+    private void ResetScrollTracking()
+    {
+        _turnResetPending = true;
+        _lastScrolledLineY = double.NaN;
+        _lastScrollTarget = double.NaN;
+        _scrollFixBudget = 1;
+        _scrollEpoch++;           // 让已经排队的校正回调自动过期
     }
 
     /// <summary>
@@ -310,11 +327,11 @@ public partial class MainPage : ContentPage
                 ApplyWordTypography(wordLabel);
         }
 
-        // 行高与换行全部失效：作废滚动状态，强制重新测量。
-        _scrollAnimId++;
-        _scrollAnimating = false;
-        _pendingScrollY = double.NaN;
+        // 行高与换行全部失效：作废滚动记忆，强制重新测量。
         _lastScrolledLineY = double.NaN;   // 清掉「行已居中」缓存，允许重新滚到激活行
+        _lastScrollTarget = double.NaN;
+        _scrollFixBudget = 1;
+        _scrollEpoch++;
         WordsHost.InvalidateMeasure();
         UpdateBottomSpacer();
 
@@ -373,7 +390,10 @@ public partial class MainPage : ContentPage
         if (e.PropertyName == nameof(RadioViewModel.IsPlaying))
             HandlePlayState(_vm.IsPlaying);
         else if (e.PropertyName == nameof(RadioViewModel.ActiveWordIndex))
+        {
+            _scrollFixBudget = 1;   // 每个新词给一次「滚动后重新校正」的机会
             _ = ScrollToActiveWordAsync();
+        }
         else if (e.PropertyName == nameof(RadioViewModel.ProgrammeTitle))
         {
             // 节目信息来自后台轮询线程，改 BindableProperty 必须回到主线程。
@@ -392,11 +412,7 @@ public partial class MainPage : ContentPage
     /// </summary>
     private void HandleTurnRebuilt()
     {
-        _turnResetPending = true;
-        _lastScrolledLineY = double.NaN;
-        _pendingScrollY = double.NaN;
-        _scrollAnimId++;          // 作废还在等动画结束的补滚任务
-        _scrollAnimating = false;
+        ResetScrollTracking();
 
         // 换句重建和滚动归零若挤在同一帧，这一帧会明显变长（就是「字幕顿一下」）。
         // 把归零推到下一轮消息循环：重建完成后新内容已有正确高度，滚一次就到位。
@@ -405,6 +421,18 @@ public partial class MainPage : ContentPage
             UpdateBottomSpacer();
             _ = ResetScrollToTopAsync();
         });
+    }
+
+    /// <summary>
+    /// 重算底部留白；若留白真的变了（可滚动范围随之变化），再校正一次激活行位置。
+    /// 大字号下这一步很关键：行高变大 ⇒ 内容更高 ⇒ 需要的滚动偏移更大，
+    /// 而滚动可能发生在内容测量完成之前，那次滚动会被夹短，激活行就停在视口外。
+    /// </summary>
+    private void RefreshSpacerAndReposition()
+    {
+        UpdateBottomSpacer();
+        if (_vm.IsPlaying)
+            _ = ScrollToActiveWordAsync();
     }
 
     /// <summary>
@@ -681,14 +709,15 @@ public partial class MainPage : ContentPage
     /// 让「当前激活词所在的那一行」平滑滚到视口垂直正中。
     ///
     /// 设计要点：
-    /// 1. 以「行」为单位而不是「词」：FlexLayout 里同一行各词的 Y 相同，行内换词不触发滚动；
+    /// 1. 以「行」为单位而不是「词」：FlexLayout 里同一行各词的 Y 相同，行内换词不必重滚，
     ///    否则每换一个词就推一次视口，画面会持续晃动。
-    /// 2. 使用平滑滚动（ScrollToAsync animated=true，Android 走原生 smoothScrollTo），
-    ///    而不是原来的瞬时跳转 —— 文字是「滑过去」而不是「闪一下」。
-    /// 3. 目标位置做过夹紧：内容不足一屏时停在顶部；句首、句尾的行受可滚动范围限制
-    ///    （句尾的居中由 BottomSpacer 保证）。
-    /// 4. 动画期间到来的新目标只保留最后一个，等这一次动画结束后再补滚，
-    ///    避免多次滚动互相截断导致抖动。
+    /// 2. 平滑滚动（ScrollToAsync animated=true → Android 原生 smoothScrollTo）：
+    ///    文字是「滑过去」而不是「闪一下」。
+    /// 3. 不做动画排队：每次换行都直接下发目标。原生滚动支持中途改目标（从当前位置续滚），
+    ///    即使某一次没滚到位，下一个词还会重新算一次 —— 不存在「卡在某个状态后不再跟随」的死角。
+    /// 4. 滚动位置不能用 ContentSize 推算后夹紧：换句 / 换字号后内容尺寸常常滞后（偏小），
+    ///    按偏小值夹紧会把滚动提前截断，激活行就停在视口下缘之外（大字号下尤其明显）。
+    ///    这里用「目标行自身的几何」做下界，保证算出的偏移一定能让本行完整进入视口。
     /// </summary>
     private async Task ScrollToActiveWordAsync()
     {
@@ -704,80 +733,139 @@ public partial class MainPage : ContentPage
         {
             _turnResetPending = false;
             _lastScrolledLineY = double.NaN;
+            _lastScrollTarget = double.NaN;
             await ResetScrollToTopAsync();
         }
 
-        double viewHeight = SubtitleScroll.Height;
-        double lineHeight = target.Height;
-        if (viewHeight <= 0 || lineHeight <= 0)
-            return;
-
         double lineTop = target.Y;
-
-        // 同一行内换词：行位置没变，已经处于居中状态，直接返回（最常见路径，零开销）。
-        if (!double.IsNaN(_lastScrolledLineY) && Math.Abs(lineTop - _lastScrolledLineY) < 1)
+        if (!TryComputeTargetY(target, out double targetY))
             return;
+
+        double scrollY = SubtitleScroll.ScrollY;
+        bool sameLine = !double.IsNaN(_lastScrolledLineY) && Math.Abs(lineTop - _lastScrolledLineY) < 1;
         _lastScrolledLineY = lineTop;
 
-        // 行中心对齐到视口中心。底部占位（BottomSpacer）已计入内容高度，
-        // 所以最后一行同样能滚到正中。
-        double lineCenter = lineTop + lineHeight / 2;
-        double contentHeight = Math.Max(
-            SubtitleScroll.ContentSize.Height,
-            WordsHost.Height + BottomSpacer.HeightRequest);
-        double maxScroll = Math.Max(0, contentHeight - viewHeight);
-        double targetY = Math.Clamp(lineCenter - viewHeight / 2, 0, maxScroll);
-
-        // 已经基本居中（不足 2dp）：不必滚动。
-        if (Math.Abs(targetY - SubtitleScroll.ScrollY) < 2)
+        // 已经在目标位置：不必滚动（行内换词的常见路径，零开销）。
+        if (Math.Abs(targetY - scrollY) < 2)
             return;
 
-        if (_scrollAnimating)
-        {
-            _pendingScrollY = targetY;   // 动画结束后补滚到最新目标
+        // 同一行、同一目标已经下发过：不重复下发（连续下发会让原生动画不断重启）。
+        if (sameLine && Math.Abs(targetY - _lastScrollTarget) < 2)
             return;
-        }
 
-        await AnimateScrollAsync(targetY);
+        _lastScrollTarget = targetY;
+        await ScrollSmoothAsync(targetY);
+        ScheduleVisibilityCorrection();
     }
 
     /// <summary>
-    /// 平滑滚动到指定偏移。
+    /// 计算「让这一行居中」所需的滚动偏移。
     ///
-    /// ScrollToAsync(animated: true) 在 Android 上落到原生的 smoothScrollTo：调用即刻返回、
-    /// 不等待动画播完，所以这里用一个短窗口（ScrollAnimSettleMs）把动画期间的重复请求合并掉，
-    /// 否则一行只隔几百毫秒时会出现两次动画互相打断、看着一卡一卡。
+    /// 可滚动范围取三个下界里的最大值：ScrollView 量到的内容高度、FlexLayout 高度 + 底部留白、
+    /// 目标行底边 + 底部留白。后两项是关键 —— 换句 / 换字号后内容尺寸常常滞后（偏小），
+    /// 按偏小值夹紧会把滚动提前截断，激活行正好停在视口下缘之外（大字号下最明显）。
     /// </summary>
-    private async Task AnimateScrollAsync(double targetY)
+    private bool TryComputeTargetY(View lineInRow, out double targetY)
     {
-        int id = ++_scrollAnimId;
-        _scrollAnimating = true;
+        targetY = 0;
 
+        double viewHeight = SubtitleScroll.Height;
+        double lineHeight = lineInRow.Height;
+        if (viewHeight <= 0 || lineHeight <= 0) return false;
+
+        double lineTop = lineInRow.Y;
+        double contentHeight = Math.Max(
+            Math.Max(SubtitleScroll.ContentSize.Height, WordsHost.Height + BottomSpacer.HeightRequest),
+            lineTop + lineHeight + BottomSpacer.HeightRequest);
+        double maxScroll = Math.Max(0, contentHeight - viewHeight);
+
+        targetY = Math.Clamp(lineTop + lineHeight / 2 - viewHeight / 2, 0, maxScroll);
+        return true;
+    }
+
+    /// <summary>
+    /// 激活词所在的行是否完整落在视口内（滚动后校验用）。
+    /// </summary>
+    private bool IsActiveWordFullyVisible()
+    {
+        int idx = _vm.ActiveWordIndex;
+        if (idx < 0 || idx >= WordsHost.Children.Count) return true;
+        if (WordsHost.Children[idx] is not View word) return true;
+
+        double scrollY = SubtitleScroll.ScrollY;
+        double viewHeight = SubtitleScroll.Height;
+        if (viewHeight <= 0) return true;
+
+        return word.Y >= scrollY - 2 && word.Y + word.Height <= scrollY + viewHeight + 2;
+    }
+
+    /// <summary>
+    /// 下发一次平滑滚动。
+    ///
+    /// ScrollToAsync(animated: true) 在 Android 上落到原生 smoothScrollTo：调用即刻返回，
+    /// 而且内容重建时回调可能根本不回来。所以等待加了一个上限 ——
+    /// 超时就不再等它、直接返回，绝不让一次没回执的滚动把后续滚动全部堵住。
+    /// </summary>
+    private async Task ScrollSmoothAsync(double targetY)
+    {
         try
         {
-            await SubtitleScroll.ScrollToAsync(0, targetY, true);
+            Task scroll = SubtitleScroll.ScrollToAsync(0, targetY, true);
+            Task finished = await Task.WhenAny(scroll, Task.Delay(ScrollCallTimeoutMs));
+            if (finished == scroll)
+            {
+                try { await scroll; } catch { /* 内容重建中滚动失败：忽略 */ }
+            }
+            else
+            {
+                // 超时放弃等待，但把可能的异常标记为已观察，避免未观察异常。
+                _ = scroll.ContinueWith(static t => _ = t.Exception, TaskContinuationOptions.OnlyOnFaulted);
+            }
         }
         catch
         {
             // 内容正在重建时可能失败，忽略。
         }
+    }
 
-        try
+    /// <summary>
+    /// 平滑滚动停下后复核一次：若激活行仍有部分在视口外（滚动之后内容才被重新测量放大、
+    /// 实际可滚范围变大，这次滚动停得偏早；或原生动画压根没执行），直接用**无动画**滚动
+    /// 跳到正确位置。
+    ///
+    /// 为什么用无动画：这是兜底路径，只在平滑滚动已经失效时才走到；瞬时跳一下
+    /// （几十毫秒的视觉变化）远比「激活词留在屏幕外」可接受，而且它是确定性的，
+    /// 不依赖原生动画回调是否回来。每个词只给一次额度，避免来回抖动。
+    /// </summary>
+    private void ScheduleVisibilityCorrection()
+    {
+        int epoch = _scrollEpoch;
+
+        Dispatcher.DispatchDelayed(TimeSpan.FromMilliseconds(ScrollVerifyDelayMs), () =>
         {
-            await Task.Delay(ScrollAnimSettleMs);
-        }
-        catch
-        {
-            // 页面已销毁：忽略。
-        }
+            if (epoch != _scrollEpoch || !_vm.IsPlaying) return;   // 期间换句/换字号/转屏/停止
+            if (_scrollFixBudget <= 0) return;
 
-        if (id != _scrollAnimId) return;   // 期间换句 / 停止 / 视口变化：本次作废
+            int idx = _vm.ActiveWordIndex;
+            if (idx < 0 || idx >= WordsHost.Children.Count) return;
+            if (WordsHost.Children[idx] is not View word) return;
+            if (IsActiveWordFullyVisible()) return;
 
-        _scrollAnimating = false;
+            _scrollFixBudget--;
+            if (!TryComputeTargetY(word, out double targetY)) return;
+            if (Math.Abs(targetY - SubtitleScroll.ScrollY) < 2) return;
 
-        double pending = _pendingScrollY;
-        _pendingScrollY = double.NaN;
-        if (!double.IsNaN(pending) && Math.Abs(pending - SubtitleScroll.ScrollY) > 2)
-            await AnimateScrollAsync(pending);
+            _lastScrollTarget = targetY;
+            _lastScrolledLineY = word.Y;
+
+            try
+            {
+                _ = SubtitleScroll.ScrollToAsync(0, targetY, false);
+            }
+            catch
+            {
+                // 内容正在重建：忽略，下一次高亮还会再校正。
+            }
+        });
     }
 }
