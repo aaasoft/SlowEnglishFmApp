@@ -3,6 +3,7 @@ using System.Threading.Tasks;
 using CommunityToolkit.Maui.Core;
 using CommunityToolkit.Maui.Views;
 using Microsoft.Maui;
+using Microsoft.Maui.Controls.Shapes;  // RoundRectangle（圆形按钮尺寸统一设置）
 using Microsoft.Maui.Devices;
 using Microsoft.Maui.Dispatching;   // IDispatcher.DispatchDelayed
 using Microsoft.Maui.Essentials;    // Preferences（字号档位持久化）
@@ -132,11 +133,38 @@ public partial class MainPage : ContentPage
             OnAirLabel.FontSize = 12;
             ListenersLabel.FontSize = 12;
             ListenersIcon.Scale = 0.8;
-            TitlePanel.Margin = new Thickness(0, 6, 0, 0);
+            TitlePanel.Margin = new Thickness(16, 0, 16, 0);
             ProgrammeLabel.FontSize = 20;
             ProgrammeLabel.MaxLines = 1;
             ProgrammeLabel.LineBreakMode = LineBreakMode.TailTruncation;
             NextLabel.FontSize = 12;
+
+            // ---- 横屏头部布局：按钮组靠左、标题居中、台标与在线人数移右 ----
+            // 按钮组放最左：车机屏幕宽、驾驶位手边就是左缘，按钮离手近、也不遮挡标题。
+            // 两个按钮统一 56dp（原来字号 48 / 播放 64 一大一小，视觉上像主次两级）。
+            Grid.SetColumn(ButtonsPanel, 0);
+            Grid.SetRow(ButtonsPanel, 0);
+            Grid.SetRowSpan(ButtonsPanel, 2);
+            ButtonsPanel.HorizontalOptions = LayoutOptions.Start;
+            ButtonsPanel.Spacing = 10;
+            SetCircleSize(FontSizeButton, 56);
+            SetCircleSize(CompactPlayButton, 56);
+            FontSizeLabel.FontSize = 20;
+
+            // 台标/在线人数挪到最右，列已收缩为 Auto，不会挤压标题。
+            Grid.SetColumn(BadgePanel, 2);
+            Grid.SetRow(BadgePanel, 0);
+            Grid.SetRowSpan(BadgePanel, 2);
+            BadgePanel.HorizontalOptions = LayoutOptions.End;
+            BadgePanel.VerticalOptions = LayoutOptions.Center;
+
+            // 标题占中间整列（RowSpan 2 ⇒ 与按钮组垂直居中对齐），文字居中。
+            Grid.SetColumn(TitlePanel, 1);
+            Grid.SetRow(TitlePanel, 0);
+            Grid.SetRowSpan(TitlePanel, 2);
+            TitlePanel.VerticalOptions = LayoutOptions.Center;
+            ProgrammeLabel.HorizontalTextAlignment = TextAlignment.Center;
+            NextLabel.HorizontalTextAlignment = TextAlignment.Center;
 
             SubtitleBorder.Margin = new Thickness(12, 2);
             SubtitleBorder.Padding = new Thickness(10, 6);
@@ -144,7 +172,7 @@ public partial class MainPage : ContentPage
             BottomPanel.Padding = new Thickness(16, 0, 16, 6);
             StatusLabel.FontSize = 12;
 
-            // 横屏：控制按钮移到顶部台标右侧（圆形），底部大按钮隐藏。
+            // 横屏：控制按钮移到顶部（圆形），底部大按钮隐藏。
             PlayButton.IsVisible = false;
             CompactPlayButton.IsVisible = true;
         }
@@ -160,6 +188,29 @@ public partial class MainPage : ContentPage
             ProgrammeLabel.MaxLines = 2;
             ProgrammeLabel.LineBreakMode = LineBreakMode.WordWrap;
             NextLabel.FontSize = 16;
+
+            // ---- 竖屏头部布局：台标(0,0) + 标题(0,1)，按钮组靠右 ----
+            Grid.SetColumn(ButtonsPanel, 2);
+            Grid.SetRow(ButtonsPanel, 0);
+            Grid.SetRowSpan(ButtonsPanel, 2);
+            ButtonsPanel.HorizontalOptions = LayoutOptions.End;
+            ButtonsPanel.Spacing = 8;
+            SetCircleSize(FontSizeButton, 48);
+            SetCircleSize(CompactPlayButton, 64);   // 竖屏隐藏，尺寸仅作占位
+            FontSizeLabel.FontSize = 18;
+
+            Grid.SetColumn(BadgePanel, 0);
+            Grid.SetRow(BadgePanel, 0);
+            Grid.SetRowSpan(BadgePanel, 1);
+            BadgePanel.HorizontalOptions = LayoutOptions.Fill;
+            BadgePanel.VerticalOptions = LayoutOptions.Center;
+
+            Grid.SetColumn(TitlePanel, 0);
+            Grid.SetRow(TitlePanel, 1);
+            Grid.SetRowSpan(TitlePanel, 1);
+            TitlePanel.VerticalOptions = LayoutOptions.Fill;
+            ProgrammeLabel.HorizontalTextAlignment = TextAlignment.Start;
+            NextLabel.HorizontalTextAlignment = TextAlignment.Start;
 
             SubtitleBorder.Margin = new Thickness(16, 4);
             SubtitleBorder.Padding = new Thickness(20);
@@ -184,6 +235,18 @@ public partial class MainPage : ContentPage
         _scrollAnimating = false;
         UpdateBottomSpacer();
         _ = ResetScrollToTopAsync();
+    }
+
+    /// <summary>
+    /// 圆形按钮的「尺寸 + 圆角」一起改，保证任意模式下两个按钮大小完全一致
+    /// （只改 Width/Height 而不改圆角会变成圆角方块）。
+    /// </summary>
+    private static void SetCircleSize(Border border, double size)
+    {
+        border.WidthRequest = size;
+        border.HeightRequest = size;
+        if (border.StrokeShape is RoundRectangle round)
+            round.CornerRadius = new CornerRadius(size / 2);
     }
 
     /// <summary>

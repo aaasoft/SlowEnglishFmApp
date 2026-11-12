@@ -39,9 +39,75 @@
 
     <Grid x:Name="RootGrid" RowDefinitions="Auto, *, Auto" ColumnDefinitions="*">
 
-        <!-- 顶部：台标 + 当前节目 + 在线人数（右侧留位给字号按钮和横屏的圆形播放/停止按钮） -->
-        <Grid x:Name="TopPanel" Grid.Row="0" Padding="24,18,24,8" ColumnDefinitions="*,Auto,Auto" RowDefinitions="Auto,Auto">
-            <HorizontalStackLayout Grid.Column="0" Spacing="14" VerticalOptions="Center">
+        <!--
+            顶部：三段式 —— 按钮组 / 台标+在线人数 / 标题。
+            列定义 Auto,*,Auto，具体谁放哪一列由 ApplyLayoutMode 按横竖屏切换：
+            · 竖屏：台标(0,0) + 标题(0,1)，按钮组靠右(列2)；
+            · 横屏：按钮组靠左(列0)、标题居中(列1)、台标移右(列2) —— 车机上左手/右手都能就近操作按钮。
+        -->
+        <Grid x:Name="TopPanel" Grid.Row="0" Padding="24,18,24,8" ColumnDefinitions="Auto,*,Auto" RowDefinitions="Auto,Auto">
+
+            <!--
+                按钮组：字号 + 播放/停止 两个圆形按钮，尺寸始终一致（竖屏只剩字号按钮）。
+                顺序为「字号在前、播放在后」，横屏挪到左侧后播放键不会贴屏幕边缘。
+            -->
+            <HorizontalStackLayout x:Name="ButtonsPanel" Grid.Column="2" Grid.Row="0" Grid.RowSpan="2"
+                                   Spacing="8" HorizontalOptions="End" VerticalOptions="Center">
+                <!--
+                    字号切换按钮：循环 小 / 中 / 大 三档（横竖屏均可见）。
+                    车机上驾驶位离屏幕远、默认字号只显示 7 行左右太小，
+                    最大档（大）在车机横屏下约显示 3 行，远距离也看得清。
+                    样式刻意与蓝色播放按钮区分（深色底），避免误触播放。
+                -->
+                <Border x:Name="FontSizeButton"
+                        WidthRequest="48" HeightRequest="48"
+                        StrokeShape="RoundRectangle 24" Stroke="Transparent"
+                        BackgroundColor="#232B36"
+                        VerticalOptions="Center">
+                    <Border.GestureRecognizers>
+                        <TapGestureRecognizer Tapped="OnFontSizeToggled" />
+                    </Border.GestureRecognizers>
+                    <Label x:Name="FontSizeLabel" Text="小"
+                           TextColor="#D7DEE8" FontSize="18" FontAttributes="Bold"
+                           HorizontalOptions="Center" VerticalOptions="Center" />
+                </Border>
+
+                <!--
+                    横屏专用：圆形播放/停止按钮（竖屏用底部的大号按钮，本控件隐藏）。
+                    图标用 Path / BoxView 绘制：emoji 字符（▶ / ⏹）在 Android 上会被渲染成彩色
+                    方形emoji，放进圆形按钮里很难看。
+                -->
+                <Border x:Name="CompactPlayButton" IsVisible="False"
+                        WidthRequest="56" HeightRequest="56"
+                        StrokeShape="RoundRectangle 28" Stroke="Transparent"
+                        BackgroundColor="#1F6FEB"
+                        VerticalOptions="Center">
+                    <Border.GestureRecognizers>
+                        <TapGestureRecognizer Command="{Binding TogglePlayCommand}" />
+                    </Border.GestureRecognizers>
+                    <Grid>
+                        <Path Data="M 0,0 L 0,26 L 21,13 Z" Fill="White" Stroke="Transparent"
+                              HorizontalOptions="Center" VerticalOptions="Center">
+                            <Path.Triggers>
+                                <DataTrigger TargetType="Path" Binding="{Binding IsPlaying}" Value="True">
+                                    <Setter Property="IsVisible" Value="False" />
+                                </DataTrigger>
+                            </Path.Triggers>
+                        </Path>
+                        <BoxView WidthRequest="18" HeightRequest="18" CornerRadius="3" Color="White"
+                                 IsVisible="False"
+                                 HorizontalOptions="Center" VerticalOptions="Center">
+                            <BoxView.Triggers>
+                                <DataTrigger TargetType="BoxView" Binding="{Binding IsPlaying}" Value="True">
+                                    <Setter Property="IsVisible" Value="True" />
+                                </DataTrigger>
+                            </BoxView.Triggers>
+                        </BoxView>
+                    </Grid>
+                </Border>
+            </HorizontalStackLayout>
+
+            <HorizontalStackLayout x:Name="BadgePanel" Grid.Column="0" Grid.Row="0" Spacing="14" VerticalOptions="Center">
                 <Border x:Name="OnAirBadge" Padding="10,4" StrokeShape="RoundRectangle 8" BackgroundColor="#B00020" Stroke="Transparent">
                     <HorizontalStackLayout Spacing="8">
                         <Ellipse WidthRequest="10" HeightRequest="10" Fill="#FF5252" />
@@ -71,65 +137,6 @@
                        TextColor="#7E8794" FontSize="16"
                        IsVisible="{Binding NextTitle, Converter={StaticResource StringNotEmptyConverter}}" />
             </VerticalStackLayout>
-
-            <!--
-                字号切换按钮：循环 小 / 中 / 大 三档（横竖屏均可见）。
-                车机上驾驶位离屏幕远、默认字号只显示 7 行左右太小，
-                最大档（大）在车机横屏下约显示 3 行，远距离也看得清。
-                样式刻意与右侧蓝色播放按钮区分（深色底、更小），避免误触播放。
-            -->
-            <Border x:Name="FontSizeButton" Grid.Column="1" Grid.Row="0" Grid.RowSpan="2"
-                    WidthRequest="48" HeightRequest="48"
-                    StrokeShape="RoundRectangle 24" Stroke="Transparent"
-                    BackgroundColor="#232B36"
-                    HorizontalOptions="End" VerticalOptions="Center"
-                    Margin="8,0,0,0"
-                    InputTransparent="False">
-                <Border.GestureRecognizers>
-                    <TapGestureRecognizer Tapped="OnFontSizeToggled" />
-                </Border.GestureRecognizers>
-                <Label x:Name="FontSizeLabel" Text="小"
-                       TextColor="#D7DEE8" FontSize="18" FontAttributes="Bold"
-                       HorizontalOptions="Center" VerticalOptions="Center" />
-            </Border>
-
-            <!--
-                横屏专用：右上角圆形播放/停止按钮。
-                横屏高度紧张，把控制按钮挪到顶部台标右侧，底部就能整块让给字幕。
-                竖屏仍用底部的大号按钮（本控件在竖屏下隐藏）。
-                图标用 Path / BoxView 绘制：emoji 字符（▶ / ⏹）在 Android 上会被渲染成彩色
-                方形emoji，放进圆形按钮里很难看。
-            -->
-            <Border x:Name="CompactPlayButton" Grid.Column="2" Grid.Row="0" Grid.RowSpan="2"
-                    IsVisible="False"
-                    WidthRequest="64" HeightRequest="64"
-                    StrokeShape="RoundRectangle 32" Stroke="Transparent"
-                    BackgroundColor="#1F6FEB"
-                    HorizontalOptions="End" VerticalOptions="Center"
-                    Margin="12,0,0,0">
-                <Border.GestureRecognizers>
-                    <TapGestureRecognizer Command="{Binding TogglePlayCommand}" />
-                </Border.GestureRecognizers>
-                <Grid>
-                    <Path Data="M 0,0 L 0,30 L 25,15 Z" Fill="White" Stroke="Transparent"
-                          HorizontalOptions="Center" VerticalOptions="Center">
-                        <Path.Triggers>
-                            <DataTrigger TargetType="Path" Binding="{Binding IsPlaying}" Value="True">
-                                <Setter Property="IsVisible" Value="False" />
-                            </DataTrigger>
-                        </Path.Triggers>
-                    </Path>
-                    <BoxView WidthRequest="22" HeightRequest="22" CornerRadius="3" Color="White"
-                             IsVisible="False"
-                             HorizontalOptions="Center" VerticalOptions="Center">
-                        <BoxView.Triggers>
-                            <DataTrigger TargetType="BoxView" Binding="{Binding IsPlaying}" Value="True">
-                                <Setter Property="IsVisible" Value="True" />
-                            </DataTrigger>
-                        </BoxView.Triggers>
-                    </BoxView>
-                </Grid>
-            </Border>
         </Grid>
 
         <!-- 中部：卡拉OK 字幕 -->
