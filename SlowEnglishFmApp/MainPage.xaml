@@ -152,8 +152,12 @@
                         底部留白（高度运行时计算，默认 0）：只有当前这句字幕本身超过一屏时才垫上，
                         值约为「半个视口 - 半行」，作用是把最后一行也能滚到视口正中。
                         不垫的话，句尾那几行永远被压在底部，永远无法居中。
+
+                        用空 Grid 而不是 BoxView：BoxView 是"绘制型"控件，
+                        Color="Transparent" 在部分 Android 版本/车机上仍会画出一块实心白矩形
+                        （现象：字幕滚到句尾时底部出现一条白带）。空布局容器不产生任何绘制。
                     -->
-                    <BoxView x:Name="BottomSpacer" Grid.Row="1" HeightRequest="0" Color="Transparent" />
+                    <Grid x:Name="BottomSpacer" Grid.Row="1" HeightRequest="0" />
                 </Grid>
             </ScrollView>
         </Border>
