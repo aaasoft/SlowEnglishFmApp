@@ -7,9 +7,13 @@ name: Android Release
 #   ANDROID_KEYSTORE_BASE64     keystore 文件的 base64（本地: base64 -w0 app.keystore）
 #   ANDROID_KEYSTORE_PASSWORD   keystore 密码（storepass）
 #   ANDROID_KEYSTORE_ALIAS      key 别名
-#   ANDROID_KEY_PASSWORD        key 密码（keypass，通常与 storepass 相同）
-# 未配置 secrets 时用 CI 临时生成的 keystore 签名（每次构建签名不同，
-# 新版本无法覆盖安装旧版本，只能先卸载再装）。
+#   ANDROID_KEY_PASSWORD        key 密码（keypass，PKCS12 下与 storepass 相同）
+#
+# 未配置 secrets 时使用仓库内的固定 keystore：.github/keystore/slowenglishfm.keystore
+#   alias / storepass / keypass 均为 slowenglishfm
+# 它保证每次构建签名一致，新版本可直接覆盖安装旧版本。
+# 注意：该文件随仓库公开，等于公开私钥 —— 仅适用于内部/自用分发，
+# 任何人拿到它都能签出同包名同签名的 APK；对外正式发布请改用上面的 secrets 方案。
 
 on:
   push:
@@ -41,7 +45,8 @@ jobs:
       - name: Install MAUI Android workload
         run: dotnet workload install maui-android --source https://api.nuget.org/v3/index.json
 
-      # 准备签名 keystore：优先用仓库 secrets 的正式签名；没有则生成临时 keystore。
+      # 准备签名 keystore：优先用仓库 secrets 的正式签名；没有则用仓库内的固定 keystore。
+      # 两者都保证「跨版本签名一致」，因此新版本可以直接覆盖安装。
       # 输出写到 GITHUB_OUTPUT，后续步骤通过 steps.keystore.outputs.* 使用。
       - name: Prepare signing keystore
         id: keystore
@@ -60,16 +65,17 @@ jobs:
             echo "storepass=$KEYSTORE_PASSWORD"           >> "$GITHUB_OUTPUT"
             echo "keypass=$KEY_PASSWORD"                  >> "$GITHUB_OUTPUT"
           else
-            echo "::warning::未配置 ANDROID_KEYSTORE_BASE64 等 secrets，使用 CI 临时生成的 keystore 签名。每次构建的签名都不同：升级安装前需先卸载旧版本。"
-            KS="$RUNNER_TEMP/ci.keystore"
-            keytool -genkeypair -v \
-              -keystore "$KS" -storepass slowenglishfm -keypass slowenglishfm \
-              -alias ci -keyalg RSA -keysize 2048 -validity 10000 \
-              -dname "CN=Slow English FM, OU=CI, O=SlowEnglishFM, C=US"
-            echo "store=$KS"              >> "$GITHUB_OUTPUT"
-            echo "alias=ci"               >> "$GITHUB_OUTPUT"
-            echo "storepass=slowenglishfm" >> "$GITHUB_OUTPUT"
-            echo "keypass=slowenglishfm"   >> "$GITHUB_OUTPUT"
+            echo "::notice::未配置 secrets，使用仓库内固定 keystore .github/keystore/slowenglishfm.keystore 签名"
+            KS="$GITHUB_WORKSPACE/.github/keystore/slowenglishfm.keystore"
+            if [ ! -f "$KS" ]; then
+              echo "::error::找不到 $KS —— 固定签名文件缺失，拒绝用临时密钥签名（会导致无法覆盖升级）"
+              exit 1
+            fi
+            # PKCS12 keystore 的 keypass 会被忽略，统一传 storepass 即可。
+            echo "store=$KS"                >> "$GITHUB_OUTPUT"
+            echo "alias=slowenglishfm"      >> "$GITHUB_OUTPUT"
+            echo "storepass=slowenglishfm"  >> "$GITHUB_OUTPUT"
+            echo "keypass=slowenglishfm"    >> "$GITHUB_OUTPUT"
           fi
 
       # 构建 Release APK。版本号取自 tag（去掉前缀 v），构建序号取 GITHUB_RUN_NUMBER。
