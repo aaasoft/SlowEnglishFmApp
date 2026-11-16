@@ -1,4 +1,3 @@
-using System.Net.Http.Json;
 using System.Text.Json;
 using SlowEnglishFmApp.Models;
 
@@ -27,6 +26,8 @@ public sealed class TimingsService : ITimingsService
     {
         _http = http;
         _http.Timeout = TimeSpan.FromSeconds(15);
+        // 和服务端协商压缩：计时文件不小且每次换节目都会拉一遍（之后走内存缓存）。
+        JsonHttp.EnableCompression(_http);
         // 站点 CDN 可能按 UA 过滤（同域 media 主机曾对非浏览器 UA 返回 403），这里带一个常规 UA。
         if (!_http.DefaultRequestHeaders.Contains("User-Agent"))
             _http.DefaultRequestHeaders.TryAddWithoutValidation(
@@ -52,7 +53,17 @@ public sealed class TimingsService : ITimingsService
         try
         {
             var url = $"timings/runs/{runId}/{kind}/word-timings.json";
-            var file = await _http.GetFromJsonAsync<TimingFile>(url, JsonOptions, cancellationToken).ConfigureAwait(false);
+
+            // 不用 GetFromJsonAsync：它不会解压 gzip 响应（本客户端已声明 Accept-Encoding）。
+            using var response = await _http.GetAsync(url, cancellationToken).ConfigureAwait(false);
+            if (!response.IsSuccessStatusCode)
+            {
+                lock (_gate) _retryAt[key] = DateTime.UtcNow.AddSeconds(30);
+                return null;
+            }
+
+            using var doc = await JsonHttp.ReadAsync(response, cancellationToken).ConfigureAwait(false);
+            TimingFile? file = doc.RootElement.Deserialize<TimingFile>(JsonOptions);
 
             if (file?.Words is { Count: > 0 } words &&
                 words.TrueForAll(w => double.IsFinite(w.Start) && double.IsFinite(w.End)))

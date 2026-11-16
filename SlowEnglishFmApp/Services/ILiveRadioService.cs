@@ -38,6 +38,12 @@ public interface ILiveRadioService
     void Stop();
 
     /// <summary>
+    /// 告知服务当前是否正在播放。播放中 /api/live 只需低频轮询（字幕与标题由音频进度驱动），
+    /// 服务据此放宽间隔以控制流量；由空闲切到播放时会立即刷新一次时间轴。
+    /// </summary>
+    void SetPlaybackActive(bool playing);
+
+    /// <summary>
     /// 查询 /api/live-clock：返回指定连接对应的“真实节目时刻”（Unix 毫秒，已含直播流的服务端缓冲延迟）。
     /// 用于把字幕进度对齐到用户实际听到的音频，而非本地墙钟。连接尚未就绪时返回 null。
     /// </summary>

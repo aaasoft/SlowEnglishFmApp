@@ -9,7 +9,9 @@ namespace SlowEnglishFmApp.Services;
 /// <summary>
 /// 轮询 SlowEnglish.FM 的 /api/live 端点，跟踪“当前正在播出的节目”。
 /// 设计要点：
-/// - 每 3 秒拉取一次（与网站一致，带 cache:'no-store'）。
+/// - 轮询节奏按播放状态自适应（见 PollIntervalPlaying / PollIntervalIdle）：
+///   该响应含 300+ 条 history，明文约 808KB，是流量消耗的最大项，不能按固定高频拉。
+/// - 请求声明 Accept-Encoding: gzip 并解压（服务端支持，808KB → 98KB）。
 /// - 仅在 current 的身份（Id）变化时触发 CurrentChanged，避免高频刷新字幕计时。
 /// - 解析使用 JsonDocument 仅抽取需要的字段（available / listeners / current / next），
 ///   这样即使响应里其它大字段（如 history）结构变化，也不会拖垮整个解析；
@@ -18,6 +20,15 @@ namespace SlowEnglishFmApp.Services;
 /// </summary>
 public sealed class LiveRadioService : ILiveRadioService
 {
+    /// <summary>
+    /// 播放中的轮询间隔。播放时标题/字幕完全由「音频进度 + 时间轴」驱动，
+    /// /api/live 只用于补充时间轴尾部的后续节目与在线人数，30 秒足够。
+    /// </summary>
+    private static readonly TimeSpan PollIntervalPlaying = TimeSpan.FromSeconds(30);
+
+    /// <summary>空闲时的轮询间隔：只用于展示「已就绪 / 即将播出」，无需 3 秒级刷新。</summary>
+    private static readonly TimeSpan PollIntervalIdle = TimeSpan.FromSeconds(20);
+
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNameCaseInsensitive = true,
@@ -33,11 +44,15 @@ public sealed class LiveRadioService : ILiveRadioService
     private int _listeners;
     private bool _available;
     private bool _running;
+    private bool _playing;
+    /// <summary>同一时刻只允许一个轮询在飞（1 = 在飞），避免慢请求叠加。</summary>
+    private int _polling;
 
     public LiveRadioService(HttpClient http)
     {
         _http = http;
         _http.Timeout = TimeSpan.FromSeconds(10);
+        JsonHttp.EnableCompression(_http);
         _timer = new Timer(_ => _ = PollAsync(), null, Timeout.Infinite, Timeout.Infinite);
     }
 
@@ -81,9 +96,8 @@ public sealed class LiveRadioService : ILiveRadioService
             _running = true;
         }
 
-        // 立即拉取一次，随后每 3 秒一次。
+        // 立即拉取一次；后续节奏由 ScheduleNext 按播放状态决定。
         _ = PollAsync();
-        _timer.Change(TimeSpan.FromSeconds(3), TimeSpan.FromSeconds(3));
     }
 
     public void Stop()
@@ -92,11 +106,46 @@ public sealed class LiveRadioService : ILiveRadioService
         _timer.Change(Timeout.Infinite, Timeout.Infinite);
     }
 
+    /// <summary>
+    /// 页面在开始/停止播放时调用：播放中放宽轮询间隔（数据大头是这条接口），
+    /// 并在开播瞬间立刻刷新一次，保证时间轴覆盖到当前节目。
+    /// </summary>
+    public void SetPlaybackActive(bool playing)
+    {
+        bool changed;
+        lock (_gate)
+        {
+            changed = _playing != playing;
+            _playing = playing;
+        }
+
+        if (!changed) return;
+
+        if (playing)
+            _ = PollAsync();     // 内部结束时会自行按新节奏排下一次
+        else
+            ScheduleNext();
+    }
+
+    private void ScheduleNext()
+    {
+        TimeSpan interval;
+        lock (_gate)
+        {
+            if (!_running) return;
+            interval = _playing ? PollIntervalPlaying : PollIntervalIdle;
+        }
+        _timer.Change(interval, Timeout.InfiniteTimeSpan);
+    }
+
     private async Task PollAsync()
     {
         bool shouldRun;
         lock (_gate) shouldRun = _running;
         if (!shouldRun) return;
+
+        // 慢请求期间又排到一次轮询：跳过，避免多个大响应并发。
+        if (Interlocked.Exchange(ref _polling, 1) == 1) return;
 
         try
         {
@@ -107,7 +156,7 @@ public sealed class LiveRadioService : ILiveRadioService
             response.EnsureSuccessStatusCode();
 
             // 仅抽取需要的字段，避免对 700KB+ 的完整响应（含 history）整体反序列化。
-            using var doc = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync().ConfigureAwait(false)).ConfigureAwait(false);
+            using var doc = await JsonHttp.ReadAsync(response).ConfigureAwait(false);
             var root = doc.RootElement;
 
             bool available = root.TryGetProperty("available", out var avEl) && avEl.ValueKind == JsonValueKind.True;
@@ -146,6 +195,11 @@ public sealed class LiveRadioService : ILiveRadioService
         catch (Exception ex)
         {
             Error?.Invoke(this, ex.Message);
+        }
+        finally
+        {
+            Volatile.Write(ref _polling, 0);
+            ScheduleNext();
         }
     }
 
@@ -259,8 +313,9 @@ public sealed class LiveRadioService : ILiveRadioService
             if (!response.IsSuccessStatusCode)
                 return null;
 
-            using var doc = await JsonDocument.ParseAsync(
-                await response.Content.ReadAsStreamAsync().ConfigureAwait(false)).ConfigureAwait(false);
+            // 注意：本次改动的 HttpClient 已声明 Accept-Encoding，响应可能是压缩体，
+            // 必须走 JsonHttp 解压读取（直接 Parse 压缩流会抛 JsonException）。
+            using var doc = await JsonHttp.ReadAsync(response).ConfigureAwait(false);
             var root = doc.RootElement;
 
             if (root.TryGetProperty("programmeAt", out var pEl))

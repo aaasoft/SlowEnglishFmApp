@@ -204,7 +204,15 @@ public class RadioViewModel : INotifyPropertyChanged, IDisposable
     public bool IsPlaying
     {
         get => _isPlaying;
-        set => Set(ref _isPlaying, value);
+        set
+        {
+            if (_isPlaying == value) return;
+            Set(ref _isPlaying, value);
+
+            // 播放中字幕/标题由音频进度驱动，/api/live 只需低频刷新时间轴 ——
+            // 这条接口明文体量近 1MB，是流量消耗的大头，必须按状态放宽间隔。
+            _live.SetPlaybackActive(value);
+        }
     }
 
     public string ProgrammeTitle
