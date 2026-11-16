@@ -107,6 +107,9 @@ public class RadioViewModel : INotifyPropertyChanged, IDisposable
     private double _wordsEnd;
     /// <summary>上次「自愈」校准请求的时间，避免反复请求。</summary>
     private DateTimeOffset _lastHealAt;
+    /// <summary>已请求过「按需时间轴刷新」的条目 Id（每个条目只请求一次，失败 2 分钟后允许重试）。</summary>
+    private string? _boundaryRefreshedEntryId;
+    private DateTimeOffset _boundaryRefreshedAt = DateTimeOffset.MinValue;
     /// <summary>上一次高亮词发生变化的时刻（Stopwatch 时间戳），用于看门狗检测时间基准被冻住。</summary>
     private long _lastAdvanceTick = Stopwatch.GetTimestamp();
 
@@ -731,6 +734,39 @@ public class RadioViewModel : INotifyPropertyChanged, IDisposable
         }).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// 播放中的 /api/live 按需刷新判定（周期轮询已停，仅 5 分钟安全网）。
+    ///
+    /// 时间轴来自上一次 /api/live（history + current + next），播放中会逐渐"用旧"：
+    /// 1. 覆盖不到当前条目之后 —— 不知道接下来播什么，条目切换时会丢；
+    /// 2. 节目时刻已越过当前条目的结束时间、而它仍是时间轴最后一条 —— 时间轴彻底过期。
+    /// 满足任一条件才请求刷新（服务侧 30s 节流）。时间轴正常时零轮询，流量只剩音频本身。
+    /// </summary>
+    private void RequestTimelineRefreshIfNeeded(LiveEntry entry, DateTimeOffset now)
+    {
+        if (entry.Id == _boundaryRefreshedEntryId
+            && DateTimeOffset.UtcNow - _boundaryRefreshedAt < TimeSpan.FromMinutes(2))
+            return;
+
+        var timeline = _live.Timeline;
+        LiveEntry? last = timeline.Count > 0 ? timeline[timeline.Count - 1] : null;
+
+        // 时间轴是否已覆盖当前条目之后（存在更晚开始的其它条目）。
+        bool extendsBeyond = last is not null
+                             && last.Id != entry.Id
+                             && last.StartsAt >= entry.EndsAt.AddSeconds(-1);
+
+        // 节目时刻已越过当前条目结束时间，而时间轴上没有更晚的条目可切换。
+        bool entryOverdue = now > entry.EndsAt.AddSeconds(5)
+                            && (last is null || last.Id == entry.Id);
+
+        if (extendsBeyond && !entryOverdue) return;
+
+        _live.RequestRefresh();
+        _boundaryRefreshedEntryId = entry.Id;
+        _boundaryRefreshedAt = DateTimeOffset.UtcNow;
+    }
+
     // ---- 字幕逐帧更新 ----
 
     private void TickKaraoke()
@@ -746,6 +782,13 @@ public class RadioViewModel : INotifyPropertyChanged, IDisposable
         if (entry.Id != _anchoredEntryId)
             SwitchEntry(entry);
         // 同一个节目内标题不会变，不必每帧重算 NextAfter（那是整条时间轴的二次扫描）。
+
+        // 1.5) 按需刷新时间轴：播放中不再周期轮询 /api/live（它是流量大头），
+        //      只在两种情况请求一次刷新——
+        //      a) 时间轴没有覆盖到当前条目之后（不知道接下来播什么，切条目会丢）；
+        //      b) 节目时刻已越过当前条目的结束时间、且它是时间轴上最后一条（时间轴过期）。
+        //      每个条目只主动请求一次（失败则 2 分钟后重试），服务端还有 30s 节流 + 5 分钟安全网兜底。
+        RequestTimelineRefreshIfNeeded(entry, now);
 
         // 2) 逐词高亮（仅 episode 有逐词计时）。
         if (_words is null or { Count: 0 }) return;

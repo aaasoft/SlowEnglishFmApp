@@ -10,7 +10,8 @@ namespace SlowEnglishFmApp.Services;
 /// 轮询 SlowEnglish.FM 的 /api/live 端点，跟踪“当前正在播出的节目”。
 /// 设计要点：
 /// - 轮询节奏按播放状态自适应（见 PollIntervalPlaying / PollIntervalIdle）：
-///   该响应含 300+ 条 history，明文约 808KB，是流量消耗的最大项，不能按固定高频拉。
+///   该响应含 300+ 条 history，明文约 808KB，是流量消耗的最大项。播放中**不做周期轮询**
+///   （仅 5 分钟安全网），时间轴由播放器按需调 RequestRefresh 刷新（临近节目切换时）。
 /// - 请求声明 Accept-Encoding: gzip 并解压（服务端支持，808KB → 98KB）。
 /// - 仅在 current 的身份（Id）变化时触发 CurrentChanged，避免高频刷新字幕计时。
 /// - 解析使用 JsonDocument 仅抽取需要的字段（available / listeners / current / next），
@@ -21,13 +22,17 @@ namespace SlowEnglishFmApp.Services;
 public sealed class LiveRadioService : ILiveRadioService
 {
     /// <summary>
-    /// 播放中的轮询间隔。播放时标题/字幕完全由「音频进度 + 时间轴」驱动，
-    /// /api/live 只用于补充时间轴尾部的后续节目与在线人数，30 秒足够。
+    /// 播放中的周期轮询间隔 —— 仅作**安全网**：正常情况下播放中不靠周期轮询，
+    /// 而是由播放器在「当前条目临近结束 / 时间轴过期」时调 RequestRefresh 按需刷新
+    /// （见 RadioViewModel.TickKaraoke）。安全网只是防止按需逻辑失效后时间轴永久卡死。
     /// </summary>
-    private static readonly TimeSpan PollIntervalPlaying = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan PollIntervalPlaying = TimeSpan.FromMinutes(5);
 
     /// <summary>空闲时的轮询间隔：只用于展示「已就绪 / 即将播出」，无需 3 秒级刷新。</summary>
     private static readonly TimeSpan PollIntervalIdle = TimeSpan.FromSeconds(20);
+
+    /// <summary>RequestRefresh 的最小间隔：按需刷新由 tick 驱动（16Hz），必须节流。</summary>
+    private static readonly long RefreshThrottleMs = 30_000;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -47,6 +52,8 @@ public sealed class LiveRadioService : ILiveRadioService
     private bool _playing;
     /// <summary>同一时刻只允许一个轮询在飞（1 = 在飞），避免慢请求叠加。</summary>
     private int _polling;
+    /// <summary>上次 RequestRefresh 被接受的时刻（TickCount64），用于节流。</summary>
+    private long _lastRefreshTick;
 
     public LiveRadioService(HttpClient http)
     {
@@ -107,8 +114,8 @@ public sealed class LiveRadioService : ILiveRadioService
     }
 
     /// <summary>
-    /// 页面在开始/停止播放时调用：播放中放宽轮询间隔（数据大头是这条接口），
-    /// 并在开播瞬间立刻刷新一次，保证时间轴覆盖到当前节目。
+    /// 页面在开始/停止播放时调用：播放中停掉周期轮询（数据大头是这条接口），
+    /// 时间轴改由 RequestRefresh 按需刷新；由空闲切到播放时会立即刷新一次。
     /// </summary>
     public void SetPlaybackActive(bool playing)
     {
@@ -122,9 +129,25 @@ public sealed class LiveRadioService : ILiveRadioService
         if (!changed) return;
 
         if (playing)
-            _ = PollAsync();     // 内部结束时会自行按新节奏排下一次
+            RequestRefresh();     // 开播立刻刷新一次时间轴（内部结束时会自行按新节奏排下一次）
         else
             ScheduleNext();
+    }
+
+    /// <summary>
+    /// 请求立即刷新一次 /api/live（播放中的时间轴按需刷新入口）。
+    /// 带 30 秒节流：调用方是 16Hz 的 tick，不节流会在边界窗口内重复拉取大响应。
+    /// </summary>
+    public void RequestRefresh()
+    {
+        if (Environment.TickCount64 - Volatile.Read(ref _lastRefreshTick) < RefreshThrottleMs)
+            return;
+
+        Volatile.Write(ref _lastRefreshTick, Environment.TickCount64);
+
+        bool shouldRun;
+        lock (_gate) shouldRun = _running;
+        if (shouldRun) _ = PollAsync();
     }
 
     private void ScheduleNext()

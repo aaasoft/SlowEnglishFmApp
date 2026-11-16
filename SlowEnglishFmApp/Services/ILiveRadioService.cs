@@ -44,6 +44,12 @@ public interface ILiveRadioService
     void SetPlaybackActive(bool playing);
 
     /// <summary>
+    /// 请求立即刷新一次 /api/live。播放中的时间轴按需刷新入口：
+    /// 播放器检测到「当前条目临近结束 / 时间轴已过期」时调用。带 30 秒节流。
+    /// </summary>
+    void RequestRefresh();
+
+    /// <summary>
     /// 查询 /api/live-clock：返回指定连接对应的“真实节目时刻”（Unix 毫秒，已含直播流的服务端缓冲延迟）。
     /// 用于把字幕进度对齐到用户实际听到的音频，而非本地墙钟。连接尚未就绪时返回 null。
     /// </summary>
