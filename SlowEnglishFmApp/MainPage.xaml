@@ -49,10 +49,11 @@
         <Grid x:Name="TopPanel" Grid.Row="0" Padding="24,18,24,8" ColumnDefinitions="Auto,*,Auto" RowDefinitions="Auto,Auto">
 
             <!--
-                按钮组：字号 + 播放/停止 两个圆形按钮，尺寸始终一致（竖屏只剩字号按钮）。
-                顺序为「字号在前、播放在后」，横屏挪到左侧后播放键不会贴屏幕边缘。
+                按钮组：播放/停止 + 字幕开关 + 字号 三个圆形按钮，尺寸始终一致。
+                竖屏只占「徽标」那一行（靠右），标题在下一行独占整行宽度，不会被按钮压住；
+                横屏由 ApplyLayoutMode 改为跨两行靠左，标题居中。
             -->
-            <HorizontalStackLayout x:Name="ButtonsPanel" Grid.Column="2" Grid.Row="0" Grid.RowSpan="2"
+            <HorizontalStackLayout x:Name="ButtonsPanel" Grid.Column="2" Grid.Row="0"
                                    Spacing="8" HorizontalOptions="End" VerticalOptions="Center">
                 <!--
                     横屏专用：圆形播放/停止按钮（竖屏用底部的大号按钮，本控件隐藏）。
@@ -88,17 +89,42 @@
                     </Grid>
                 </Border>
                 <!--
-                    字号切换按钮：循环 小 / 中 / 大 三档（横竖屏均可见）。
+                    字幕开关按钮：默认关闭（纯听音频，不拉取逐词计时数据）。
+                    开启时按钮变亮；字幕卡片与「字号」按钮只有在 ShowKaraoke（正在显示字幕）时才出现。
+                    与字号按钮同为深色底圆形，避免误触蓝色播放键。
+                -->
+                <Border x:Name="SubtitleToggleButton"
+                        WidthRequest="48" HeightRequest="48"
+                        StrokeShape="RoundRectangle 24" Stroke="Transparent"
+                        BackgroundColor="#232B36"
+                        VerticalOptions="Center">
+                    <Border.GestureRecognizers>
+                        <TapGestureRecognizer Tapped="OnSubtitlesToggled" />
+                    </Border.GestureRecognizers>
+                    <Label x:Name="SubtitleToggleLabel" Text="字"
+                           TextColor="#7E8794" FontSize="18" FontAttributes="Bold"
+                           HorizontalOptions="Center" VerticalOptions="Center">
+                        <Label.Triggers>
+                            <DataTrigger TargetType="Label" Binding="{Binding SubtitlesEnabled}" Value="True">
+                                <Setter Property="TextColor" Value="#FFFFFF" />
+                            </DataTrigger>
+                        </Label.Triggers>
+                    </Label>
+                </Border>
+                <!--
+                    字号切换按钮：循环 小 / 中 / 大 三档。
                     车机上驾驶位离屏幕远、默认字号只显示 7 行左右太小，
                     最大档（大）在车机横屏下约显示 3 行，远距离也看得清。
                     样式刻意与蓝色播放按钮区分（深色底），避免误触播放。
+                    只在字幕显示中才有意义，随 ShowKaraoke 显隐。
                 -->
                 <Border x:Name="FontSizeButton"
         WidthRequest="48" HeightRequest="48"
         StrokeShape="RoundRectangle 24" Stroke="Transparent"
         BackgroundColor="#232B36"
-        VerticalOptions="Center">
-                    <Border.GestureRecognizers> 
+        VerticalOptions="Center"
+        IsVisible="{Binding ShowKaraoke}">
+                    <Border.GestureRecognizers>
                         <TapGestureRecognizer Tapped="OnFontSizeToggled" />
                     </Border.GestureRecognizers>
                     <Label x:Name="FontSizeLabel" Text="小"
@@ -129,7 +155,7 @@
                 </HorizontalStackLayout>
             </HorizontalStackLayout>
 
-            <VerticalStackLayout x:Name="TitlePanel" Grid.Column="0" Grid.Row="1" Spacing="2" Margin="0,12,0,0">
+            <VerticalStackLayout x:Name="TitlePanel" Grid.Column="0" Grid.ColumnSpan="3" Grid.Row="1" Spacing="2" Margin="0,12,0,0">
                 <Label x:Name="ProgrammeLabel" Text="{Binding ProgrammeTitle}"
                        TextColor="White" FontSize="30" FontAttributes="Bold"
                        LineBreakMode="WordWrap" MaxLines="2" />
@@ -139,10 +165,11 @@
             </VerticalStackLayout>
         </Grid>
 
-        <!-- 中部：卡拉OK 字幕 -->
+        <!-- 中部：卡拉OK 字幕（默认隐藏，顶部「字」按钮打开后才显示并拉取数据） -->
         <Border x:Name="SubtitleBorder" Grid.Row="1" Margin="16,4" StrokeShape="RoundRectangle 16"
                 Stroke="#1C2530" BackgroundColor="#141A21" Padding="20"
-                MinimumHeightRequest="96">
+                MinimumHeightRequest="96"
+                IsVisible="{Binding ShowKaraoke}">
             <ScrollView x:Name="SubtitleScroll" Orientation="Vertical" VerticalScrollBarVisibility="Never">
                 <!--
                     外面套一层 Grid：把 FlexLayout 的可用宽度钉死为视口宽度。

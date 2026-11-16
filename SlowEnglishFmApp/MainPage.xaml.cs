@@ -177,9 +177,10 @@ public partial class MainPage : ContentPage
             Grid.SetRow(ButtonsPanel, 0);
             Grid.SetRowSpan(ButtonsPanel, 2);
             ButtonsPanel.HorizontalOptions = LayoutOptions.Start;
-            ButtonsPanel.Spacing = 10;
+            ButtonsPanel.Spacing = 10;            SetCircleSize(SubtitleToggleButton, 56);
             SetCircleSize(FontSizeButton, 56);
             SetCircleSize(CompactPlayButton, 56);
+            SubtitleToggleLabel.FontSize = 20;
             FontSizeLabel.FontSize = 20;
 
             // 台标/在线人数挪到最右，列已收缩为 Auto，不会挤压标题。
@@ -191,6 +192,7 @@ public partial class MainPage : ContentPage
 
             // 标题占中间整列（RowSpan 2 ⇒ 与按钮组垂直居中对齐），文字居中。
             Grid.SetColumn(TitlePanel, 1);
+            Grid.SetColumnSpan(TitlePanel, 1);   // 横屏只占中间列，右边留给台标/人数
             Grid.SetRow(TitlePanel, 0);
             Grid.SetRowSpan(TitlePanel, 2);
             TitlePanel.VerticalOptions = LayoutOptions.Center;
@@ -220,14 +222,18 @@ public partial class MainPage : ContentPage
             ProgrammeLabel.LineBreakMode = LineBreakMode.WordWrap;
             NextLabel.FontSize = 16;
 
-            // ---- 竖屏头部布局：台标(0,0) + 标题(0,1)，按钮组靠右 ----
+            // ---- 竖屏头部布局：台标(0,0) + 按钮组靠右同排；标题单独占下一行整行 ----
+            // 按钮只占第 0 行（与徽标同排）。若跨两行会压到标题右侧——
+            // 竖屏宽度有限，标题本来就贴着按钮，按钮跨行必然重叠。
             Grid.SetColumn(ButtonsPanel, 2);
             Grid.SetRow(ButtonsPanel, 0);
-            Grid.SetRowSpan(ButtonsPanel, 2);
+            Grid.SetRowSpan(ButtonsPanel, 1);
             ButtonsPanel.HorizontalOptions = LayoutOptions.End;
             ButtonsPanel.Spacing = 8;
+            SetCircleSize(SubtitleToggleButton, 48);
             SetCircleSize(FontSizeButton, 48);
             SetCircleSize(CompactPlayButton, 64);   // 竖屏隐藏，尺寸仅作占位
+            SubtitleToggleLabel.FontSize = 18;
             FontSizeLabel.FontSize = 18;
 
             Grid.SetColumn(BadgePanel, 0);
@@ -237,6 +243,7 @@ public partial class MainPage : ContentPage
             BadgePanel.VerticalOptions = LayoutOptions.Center;
 
             Grid.SetColumn(TitlePanel, 0);
+            Grid.SetColumnSpan(TitlePanel, 3);   // 竖屏标题独占整行，不再被按钮遮挡
             Grid.SetRow(TitlePanel, 1);
             Grid.SetRowSpan(TitlePanel, 1);
             TitlePanel.VerticalOptions = LayoutOptions.Fill;
@@ -287,6 +294,15 @@ public partial class MainPage : ContentPage
         border.HeightRequest = size;
         if (border.StrokeShape is RoundRectangle round)
             round.CornerRadius = new CornerRadius(size / 2);
+    }
+
+    /// <summary>
+    /// 点击顶部「字」按钮：打开/关闭字幕。关闭时清空字幕界面并停止逐词高亮，
+    /// 打开时才为当前节目拉取逐词计时数据（见 RadioViewModel.SubtitlesEnabled）。
+    /// </summary>
+    private void OnSubtitlesToggled(object? sender, TappedEventArgs e)
+    {
+        _vm.SubtitlesEnabled = !_vm.SubtitlesEnabled;
     }
 
     /// <summary>

@@ -118,6 +118,10 @@ public class RadioViewModel : INotifyPropertyChanged, IDisposable
     private string _nextTitle = string.Empty;
     private int _listeners;
     private bool _showKaraoke;
+    /// <summary>用户是否打开了字幕（顶部「字」按钮）。默认关闭：不打开就完全不拉取逐词计时数据。</summary>
+    private bool _subtitlesEnabled;
+    /// <summary>最近一次锚定的条目（字幕开关中途打开时，据此补拉当前节目的计时文件）。</summary>
+    private LiveEntry? _currentEntry;
     private string _statusMessage = "点击播放按钮，开始收听实时广播";
     private bool _isLiveAvailable = true;
     private int _activeWordIndex = -1;
@@ -242,6 +246,59 @@ public class RadioViewModel : INotifyPropertyChanged, IDisposable
         set => Set(ref _showKaraoke, value);
     }
 
+    /// <summary>
+    /// 字幕总开关（用户意图，与 ShowKaraoke 区分：后者是「此刻真的在显示」，
+    /// 还要求正在播放且数据已就绪）。默认关闭 —— 不看字幕就完全不产生
+    /// word-timings 下载与逐词高亮开销。
+    /// </summary>
+    public bool SubtitlesEnabled
+    {
+        get => _subtitlesEnabled;
+        set
+        {
+            if (_subtitlesEnabled == value) return;
+            Set(ref _subtitlesEnabled, value);
+            OnSubtitlesEnabledChanged(value);
+        }
+    }
+
+    /// <summary>
+    /// 字幕开关变化：
+    /// · 关闭 —— 立即隐藏并清空字幕界面（词表解析结果保留，重新打开无需重新解析）；
+    /// · 打开 —— 若正在播放 episode 且词表尚未加载，此刻才发起计时文件下载。
+    /// </summary>
+    private void OnSubtitlesEnabledChanged(bool enabled)
+    {
+        if (!enabled)
+        {
+            ShowKaraoke = false;
+            _currentTurn = -1;
+            _lastActiveIndex = -1;
+            ActiveWordIndex = -1;
+            ClearTurnWords();
+            return;
+        }
+
+        if (!IsPlaying) return;
+
+        if (_words is null or { Count: 0 })
+        {
+            // 播放中途打开：为当前节目补拉计时（之前按「字幕关闭」跳过了下载）。
+            if (_currentEntry is { } entry && IsEpisode(entry))
+            {
+                ShowKaraoke = true;   // 先亮出卡片，词表到达后逐句填充
+                StatusMessage = "正在加载字幕…";
+                _ = LoadTimingsAsync(entry.RunId!, entry.Kind!, entry.Id);
+            }
+        }
+        else
+        {
+            // 数据已就绪（本轮播放内曾打开过）：直接恢复显示。
+            ShowKaraoke = true;
+            _currentTurn = -1;   // 强制下一帧重建当前句
+        }
+    }
+
     public string StatusMessage
     {
         get => _statusMessage;
@@ -343,6 +400,7 @@ public class RadioViewModel : INotifyPropertyChanged, IDisposable
         }
 
         _anchoredEntryId = null;
+        _currentEntry = null;
         _words = null;
         _wordsByTurn = null;
         _wordsEnd = 0;
@@ -443,6 +501,7 @@ public class RadioViewModel : INotifyPropertyChanged, IDisposable
         if (IsPlaying) return;
 
         _anchoredEntryId = entry?.Id;
+        _currentEntry = entry;
         _words = null;
         _wordsByTurn = null;
         _wordsEnd = 0;
@@ -456,7 +515,7 @@ public class RadioViewModel : INotifyPropertyChanged, IDisposable
         bool isEpisode = IsEpisode(entry);
         ShowKaraoke = false;
         StatusMessage = isEpisode
-            ? "已就绪，点击播放开始收听并同步字幕"
+            ? "已就绪，点击播放开始收听"
             : (string.IsNullOrEmpty(entry?.Title) ? "电台暂未播出，请稍候…" : $"♪ {entry!.Title}");
     }
 
@@ -478,6 +537,7 @@ public class RadioViewModel : INotifyPropertyChanged, IDisposable
     private void SwitchEntry(LiveEntry entry)
     {
         _anchoredEntryId = entry.Id;
+        _currentEntry = entry;
         _currentTurn = -1;
         _lastActiveIndex = -1;
         _words = null;
@@ -487,11 +547,19 @@ public class RadioViewModel : INotifyPropertyChanged, IDisposable
         UpdateTitles(entry);
 
         bool isEpisode = IsEpisode(entry);
-        ShowKaraoke = isEpisode;
+        ShowKaraoke = isEpisode && SubtitlesEnabled;
 
         if (!isEpisode)
         {
             StatusMessage = $"♪ {entry.Title}";
+            return;
+        }
+
+        // 字幕关闭：不下载计时文件（默认关闭的意义就是「不看字幕就没有这部分流量」）。
+        // 中途打开时由 OnSubtitlesEnabledChanged 为当前节目补拉。
+        if (!SubtitlesEnabled)
+        {
+            StatusMessage = string.Empty;
             return;
         }
 
@@ -712,6 +780,10 @@ public class RadioViewModel : INotifyPropertyChanged, IDisposable
             // 加载期间节目可能已经切换，丢弃过期结果。
             if (expectedEntryId is not null && _anchoredEntryId != expectedEntryId) return;
 
+            // 加载期间字幕被关闭：不应用。重新打开时 TimingsService 走内存缓存，
+            // 不会再次产生网络流量。
+            if (!SubtitlesEnabled) return;
+
             if (words is null or { Count: 0 })
             {
                 // 少数节目确实没有逐词计时文件，保持收听即可，不打断。
@@ -790,7 +862,9 @@ public class RadioViewModel : INotifyPropertyChanged, IDisposable
         //      每个条目只主动请求一次（失败则 2 分钟后重试），服务端还有 30s 节流 + 5 分钟安全网兜底。
         RequestTimelineRefreshIfNeeded(entry, now);
 
-        // 2) 逐词高亮（仅 episode 有逐词计时）。
+        // 2) 逐词高亮（仅 episode 有逐词计时）。字幕关闭时 tick 只负责
+        //    标题定位与时间轴按需刷新，词表相关计算全部跳过。
+        if (!SubtitlesEnabled) return;
         if (_words is null or { Count: 0 }) return;
 
         double elapsed = Math.Max(0, (now - entry.StartsAt).TotalSeconds)
