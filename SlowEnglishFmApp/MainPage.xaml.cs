@@ -189,8 +189,6 @@ public partial class MainPage : ContentPage
         if (compact)
         {
             TopPanel.Padding = new Thickness(16, 6, 16, 2);
-            OnAirBadge.Padding = new Thickness(8, 2);
-            OnAirLabel.FontSize = 12;
             ListenersLabel.FontSize = 12;
             ListenersIcon.Scale = 0.8;
             TitlePanel.Margin = new Thickness(16, 0, 16, 0);
@@ -211,7 +209,9 @@ public partial class MainPage : ContentPage
             Grid.SetRow(ButtonsPanel, 0);
             Grid.SetRowSpan(ButtonsPanel, 2);
             ButtonsPanel.HorizontalOptions = LayoutOptions.Start;
-            ButtonsPanel.Spacing = 10;            SetCircleSize(SubtitleToggleButton, 56);
+            ButtonsPanel.Spacing = 10;
+
+            SetCircleSize(SubtitleToggleButton, 56);
             SetCircleSize(FontSizeButton, 56);
             SetCircleSize(BrightnessButton, 56);
             SetCircleSize(CompactPlayButton, 56);
@@ -239,16 +239,10 @@ public partial class MainPage : ContentPage
 
             BottomPanel.Padding = new Thickness(16, 0, 16, 6);
             StatusLabel.FontSize = 12;
-
-            // 横屏：控制按钮移到顶部（圆形），底部大按钮隐藏。
-            PlayButton.IsVisible = false;
-            CompactPlayButton.IsVisible = true;
         }
         else
         {
             TopPanel.Padding = new Thickness(24, 18, 24, 8);
-            OnAirBadge.Padding = new Thickness(10, 4);
-            OnAirLabel.FontSize = 16;
             ListenersLabel.FontSize = 16;
             ListenersIcon.Scale = 1.0;
             TitlePanel.Margin = new Thickness(0, 12, 0, 0);
@@ -273,7 +267,7 @@ public partial class MainPage : ContentPage
             SetCircleSize(SubtitleToggleButton, 48);
             SetCircleSize(FontSizeButton, 48);
             SetCircleSize(BrightnessButton, 48);
-            SetCircleSize(CompactPlayButton, 64);   // 竖屏隐藏，尺寸仅作占位
+            SetCircleSize(CompactPlayButton, 48);
             SubtitleToggleLabel.FontSize = 18;
             FontSizeLabel.FontSize = 18;
             BrightnessLabel.FontSize = 18;
@@ -296,13 +290,6 @@ public partial class MainPage : ContentPage
 
             BottomPanel.Padding = new Thickness(24, 10, 24, 24);
             StatusLabel.FontSize = 16;
-            // 竖屏：恢复底部大按钮，隐藏顶部圆形按钮。
-            PlayButton.IsVisible = true;
-            CompactPlayButton.IsVisible = false;
-            PlayButton.FontSize = 28;
-            PlayButton.HeightRequest = 84;
-            PlayButton.CornerRadius = 42;
-            PlayButton.Margin = new Thickness(0, 6);
         }
 
         // 视口尺寸变了，旧的字幕滚动偏移不再有效，回到顶部由接下来的高亮重新定位。

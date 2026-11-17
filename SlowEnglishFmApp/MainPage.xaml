@@ -61,7 +61,7 @@
                     图标用 Path / BoxView 绘制：emoji 字符（▶ / ⏹）在 Android 上会被渲染成彩色
                     方形emoji，放进圆形按钮里很难看。
                 -->
-                <Border x:Name="CompactPlayButton" IsVisible="False"
+                <Border x:Name="CompactPlayButton"
                         WidthRequest="56" HeightRequest="56"
                         StrokeShape="RoundRectangle 28" Stroke="Transparent"
                         BackgroundColor="#1F6FEB"
@@ -153,12 +153,6 @@
             </HorizontalStackLayout>
 
             <HorizontalStackLayout x:Name="BadgePanel" Grid.Column="2" Grid.Row="0" Spacing="14" VerticalOptions="Center">
-                <Border x:Name="OnAirBadge" Padding="10,4" StrokeShape="RoundRectangle 8" BackgroundColor="#B00020" Stroke="Transparent">
-                    <HorizontalStackLayout Spacing="8">
-                        <Ellipse WidthRequest="10" HeightRequest="10" Fill="#FF5252" />
-                        <Label x:Name="OnAirLabel" Text="ON AIR" TextColor="White" FontSize="16" FontAttributes="Bold" />
-                    </HorizontalStackLayout>
-                </Border>
                 <HorizontalStackLayout x:Name="ListenersPanel" Spacing="6" VerticalOptions="Center">
                     <!--
                         「在线听众」图标：自绘的单色人形剪影（头 + 肩）。
@@ -266,20 +260,6 @@
             <Label x:Name="StatusLabel" Grid.Row="0" Text="{Binding StatusMessage}"
                    TextColor="#9AA4B2" FontSize="16" HorizontalTextAlignment="Center"
                    IsVisible="{Binding StatusMessage, Converter={StaticResource StringNotEmptyConverter}}" />
-
-            <Button x:Name="PlayButton" Grid.Row="1" Command="{Binding TogglePlayCommand}"
-                    FontSize="28" FontAttributes="Bold"
-                    HeightRequest="84" CornerRadius="42" Margin="0,6"
-                    BackgroundColor="#1F6FEB" TextColor="White">
-                <Button.Triggers>
-                    <DataTrigger TargetType="Button" Binding="{Binding IsPlaying}" Value="False">
-                        <Setter Property="Text" Value="&#9654;  播放" />
-                    </DataTrigger>
-                    <DataTrigger TargetType="Button" Binding="{Binding IsPlaying}" Value="True">
-                        <Setter Property="Text" Value="&#9209;  停止" />
-                    </DataTrigger>
-                </Button.Triggers>
-            </Button>
         </Grid>
     </Grid>
 </ContentPage>
