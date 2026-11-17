@@ -208,7 +208,6 @@ public partial class MainPage : ContentPage
             // ---- 横屏头部布局：按钮组靠左、标题居中、台标与在线人数移右 ----
             // 按钮组放最左：车机屏幕宽、驾驶位手边就是左缘，按钮离手近、也不遮挡标题。
             // 两个按钮统一 56dp（原来字号 48 / 播放 64 一大一小，视觉上像主次两级）。
-            Grid.SetColumn(ButtonsPanel, 0);
             Grid.SetRow(ButtonsPanel, 0);
             Grid.SetRowSpan(ButtonsPanel, 2);
             ButtonsPanel.HorizontalOptions = LayoutOptions.Start;
@@ -221,7 +220,6 @@ public partial class MainPage : ContentPage
             BrightnessLabel.FontSize = 20;
 
             // 台标/在线人数挪到最右，列已收缩为 Auto，不会挤压标题。
-            Grid.SetColumn(BadgePanel, 2);
             Grid.SetRow(BadgePanel, 0);
             Grid.SetRowSpan(BadgePanel, 2);
             BadgePanel.HorizontalOptions = LayoutOptions.End;
@@ -268,7 +266,6 @@ public partial class MainPage : ContentPage
             // ---- 竖屏头部布局：台标(0,0) + 按钮组靠右同排；标题单独占下一行整行 ----
             // 按钮只占第 0 行（与徽标同排）。若跨两行会压到标题右侧——
             // 竖屏宽度有限，标题本来就贴着按钮，按钮跨行必然重叠。
-            Grid.SetColumn(ButtonsPanel, 2);
             Grid.SetRow(ButtonsPanel, 0);
             Grid.SetRowSpan(ButtonsPanel, 1);
             ButtonsPanel.HorizontalOptions = LayoutOptions.End;
@@ -281,7 +278,6 @@ public partial class MainPage : ContentPage
             FontSizeLabel.FontSize = 18;
             BrightnessLabel.FontSize = 18;
 
-            Grid.SetColumn(BadgePanel, 0);
             Grid.SetRow(BadgePanel, 0);
             Grid.SetRowSpan(BadgePanel, 1);
             BadgePanel.HorizontalOptions = LayoutOptions.Fill;
