@@ -9,6 +9,7 @@
 
     <ContentPage.Resources>
         <converters:StringNotEmptyConverter x:Key="StringNotEmptyConverter" />
+        <converters:InverseBoolConverter x:Key="InverseBoolConverter" />
 
         <Style x:Key="KaraokeLabel" TargetType="Label">
             <Setter Property="TextColor" Value="#F5F7FA" />
@@ -155,7 +156,13 @@
                 </HorizontalStackLayout>
             </HorizontalStackLayout>
 
-            <VerticalStackLayout x:Name="TitlePanel" Grid.Column="0" Grid.ColumnSpan="3" Grid.Row="1" Spacing="2" Margin="0,12,0,0">
+            <!--
+                顶部标题：只在显示字幕时留在头部。
+                字幕关闭后头部会只剩台标和按钮，这时节目信息改由中部的 CenterTitlePanel
+                居中显示（见下方），不再重复出现在顶部。
+            -->
+            <VerticalStackLayout x:Name="TitlePanel" Grid.Column="0" Grid.ColumnSpan="3" Grid.Row="1" Spacing="2" Margin="0,12,0,0"
+                                 IsVisible="{Binding ShowKaraoke}">
                 <Label x:Name="ProgrammeLabel" Text="{Binding ProgrammeTitle}"
                        TextColor="White" FontSize="30" FontAttributes="Bold"
                        LineBreakMode="WordWrap" MaxLines="2" />
@@ -216,6 +223,25 @@
                 </Grid>
             </ScrollView>
         </Border>
+
+        <!--
+            字幕关闭时的居中标题。
+            字幕卡片隐藏后中部会空出一大片（字幕是 Grid 的 * 行），
+            把当前节目挪到这里垂直居中，整屏就读成「中间是节目、底部是播放键」，
+            比把标题缩在顶部更符合「只听节目」的场景。
+            与 SubtitleBorder / TitlePanel 严格互斥（同一个 ShowKaraoke 的正反绑定）。
+        -->
+        <VerticalStackLayout x:Name="CenterTitlePanel" Grid.Row="1"
+                             IsVisible="{Binding ShowKaraoke, Converter={StaticResource InverseBoolConverter}}"
+                             HorizontalOptions="Fill" VerticalOptions="Center"
+                             Padding="32,0" Spacing="10">
+            <Label x:Name="CenterProgrammeLabel" Text="{Binding ProgrammeTitle}"
+                   TextColor="White" FontSize="34" FontAttributes="Bold"
+                   HorizontalTextAlignment="Center" LineBreakMode="WordWrap" MaxLines="4" />
+            <Label x:Name="CenterNextLabel" Text="{Binding NextTitle, StringFormat='接下来：{0}'}"
+                   TextColor="#7E8794" FontSize="16" HorizontalTextAlignment="Center"
+                   IsVisible="{Binding NextTitle, Converter={StaticResource StringNotEmptyConverter}}" />
+        </VerticalStackLayout>
 
         <!-- 底部：状态 / 播放控制 -->
         <Grid x:Name="BottomPanel" Grid.Row="2" Padding="24,10,24,24" RowDefinitions="Auto,Auto" ColumnDefinitions="*">

@@ -170,6 +170,12 @@ public partial class MainPage : ContentPage
             ProgrammeLabel.LineBreakMode = LineBreakMode.TailTruncation;
             NextLabel.FontSize = 12;
 
+            // 字幕关闭时的居中标题：横屏高度紧张，字号和最大行数都收一点。
+            CenterTitlePanel.Padding = new Thickness(24, 0);
+            CenterProgrammeLabel.FontSize = 26;
+            CenterProgrammeLabel.MaxLines = 3;
+            CenterNextLabel.FontSize = 13;
+
             // ---- 横屏头部布局：按钮组靠左、标题居中、台标与在线人数移右 ----
             // 按钮组放最左：车机屏幕宽、驾驶位手边就是左缘，按钮离手近、也不遮挡标题。
             // 两个按钮统一 56dp（原来字号 48 / 播放 64 一大一小，视觉上像主次两级）。
@@ -221,6 +227,12 @@ public partial class MainPage : ContentPage
             ProgrammeLabel.MaxLines = 2;
             ProgrammeLabel.LineBreakMode = LineBreakMode.WordWrap;
             NextLabel.FontSize = 16;
+
+            // 字幕关闭时的居中标题：竖屏宽度足，可以更大更宽松。
+            CenterTitlePanel.Padding = new Thickness(32, 0);
+            CenterProgrammeLabel.FontSize = 34;
+            CenterProgrammeLabel.MaxLines = 4;
+            CenterNextLabel.FontSize = 16;
 
             // ---- 竖屏头部布局：台标(0,0) + 按钮组靠右同排；标题单独占下一行整行 ----
             // 按钮只占第 0 行（与徽标同排）。若跨两行会压到标题右侧——
