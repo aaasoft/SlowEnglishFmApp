@@ -179,7 +179,7 @@ public sealed class LiveRadioService : ILiveRadioService
             response.EnsureSuccessStatusCode();
 
             // 仅抽取需要的字段，避免对 700KB+ 的完整响应（含 history）整体反序列化。
-            using var doc = await JsonHttp.ReadAsync(response, default, "api/live").ConfigureAwait(false);
+            using var doc = await JsonHttp.ReadAsync(response).ConfigureAwait(false);
             var root = doc.RootElement;
 
             bool available = root.TryGetProperty("available", out var avEl) && avEl.ValueKind == JsonValueKind.True;
@@ -338,7 +338,7 @@ public sealed class LiveRadioService : ILiveRadioService
 
             // 注意：本次改动的 HttpClient 已声明 Accept-Encoding，响应可能是压缩体，
             // 必须走 JsonHttp 解压读取（直接 Parse 压缩流会抛 JsonException）。
-            using var doc = await JsonHttp.ReadAsync(response, default, "api/live-clock").ConfigureAwait(false);
+            using var doc = await JsonHttp.ReadAsync(response).ConfigureAwait(false);
             var root = doc.RootElement;
 
             if (root.TryGetProperty("programmeAt", out var pEl))

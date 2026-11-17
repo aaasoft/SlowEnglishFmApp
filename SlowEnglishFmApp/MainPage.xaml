@@ -217,23 +217,13 @@
             </ScrollView>
         </Border>
 
-        <!-- 底部：状态 / 流量诊断 / 播放控制 -->
-        <Grid x:Name="BottomPanel" Grid.Row="2" Padding="24,10,24,24" RowDefinitions="Auto,Auto,Auto" ColumnDefinitions="*">
+        <!-- 底部：状态 / 播放控制 -->
+        <Grid x:Name="BottomPanel" Grid.Row="2" Padding="24,10,24,24" RowDefinitions="Auto,Auto" ColumnDefinitions="*">
             <Label x:Name="StatusLabel" Grid.Row="0" Text="{Binding StatusMessage}"
                    TextColor="#9AA4B2" FontSize="16" HorizontalTextAlignment="Center"
                    IsVisible="{Binding StatusMessage, Converter={StaticResource StringNotEmptyConverter}}" />
 
-            <!--
-                API 流量诊断（只统计 App 发出的 HTTP；音频流不经此处）：
-                用它对比系统的流量速率 —— 若系统显示远大于此值，
-                差额来自音频流（播放器反复重开连接/重缓冲）。
-            -->
-            <Label x:Name="TrafficLabel" Grid.Row="1"
-                   Text="API ↓ 0.0 KB/s"
-                   TextColor="#5B6675" FontSize="12" HorizontalTextAlignment="Center"
-                   Margin="0,2,0,0" />
-
-            <Button x:Name="PlayButton" Grid.Row="2" Command="{Binding TogglePlayCommand}"
+            <Button x:Name="PlayButton" Grid.Row="1" Command="{Binding TogglePlayCommand}"
                     FontSize="28" FontAttributes="Bold"
                     HeightRequest="84" CornerRadius="42" Margin="0,6"
                     BackgroundColor="#1F6FEB" TextColor="White">
