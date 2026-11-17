@@ -56,6 +56,27 @@ public partial class MainPage : ContentPage
     private const string FontSizePrefKey = "karaoke_font_size";
     private int _fontLevelIndex;
 
+    // ---------------------------------------------------------------------------
+    // 夜间调光档位（顶部「亮/柔/暗」按钮循环切换）
+    //
+    // 车机夜间行车时，黑底上的纯白字幕（#F5F7FA）对比极强、看久了刺眼。
+    // 做法是把整个 RootGrid 的不透明度调低，让它向页面底色（#0E1116）方向「褪」下去：
+    // 白字从 245 褪到约 125/105，观感等同于把背光调暗，但不动系统亮度、不影响其它应用、不需要权限。
+    // 相比再盖一层半透明黑遮罩，这个做法有两个好处：
+    // · 不新增覆盖整个页面的视图，触摸事件不可能被吞（遮罩类做法一旦 InputTransparent 失效，
+    //   所有按钮会瞬间失灵）；
+    // · 不参与布局、不改任何控件的颜色，调光只是渲染属性，不改换行/行高，滚动与高亮零影响。
+    // 数值是不透明度：1.0=原色，0.70 明显变柔，0.48 适合完全黑暗的夜路。
+    // ---------------------------------------------------------------------------
+    private static readonly (string Label, double Opacity)[] BrightnessLevels =
+    {
+        ("亮", 1.00),
+        ("柔", 0.70),
+        ("暗", 0.48),
+    };
+    private const string BrightnessPrefKey = "night_brightness_level";
+    private int _brightnessLevelIndex;
+
     // 词距的基准值（对应「小」档 40 号）：横向 1 + 6 ⇒ 相邻词间距 14dp ≈ 0.35em。
     // 各档位按 size / 40 等比缩放这三组值，词距的 em 比例保持不变。
     private const double KaraokeBaseFontSize = 40;
@@ -132,6 +153,13 @@ public partial class MainPage : ContentPage
         _fontLevelIndex = Array.FindIndex(KaraokeFontLevels, l => Math.Abs(l.Size - savedSize) < 0.5);
         if (_fontLevelIndex < 0) _fontLevelIndex = 0;
         ApplyKaraokeFontSize(KaraokeFontLevels[_fontLevelIndex].Size);
+
+        // 恢复上次的调光档位：夜间开着「暗」，第二天白天启动应该还是「暗」，
+        // 由用户自己按下一次按钮回到「亮」，而不是每次启动都重新刺眼一次。
+        _brightnessLevelIndex = Preferences.Get(BrightnessPrefKey, 0);
+        if (_brightnessLevelIndex < 0 || _brightnessLevelIndex >= BrightnessLevels.Length)
+            _brightnessLevelIndex = 0;
+        ApplyBrightness();
     }
 
     protected override void OnAppearing()
@@ -185,9 +213,11 @@ public partial class MainPage : ContentPage
             ButtonsPanel.HorizontalOptions = LayoutOptions.Start;
             ButtonsPanel.Spacing = 10;            SetCircleSize(SubtitleToggleButton, 56);
             SetCircleSize(FontSizeButton, 56);
+            SetCircleSize(BrightnessButton, 56);
             SetCircleSize(CompactPlayButton, 56);
             SubtitleToggleLabel.FontSize = 20;
             FontSizeLabel.FontSize = 20;
+            BrightnessLabel.FontSize = 20;
 
             // 台标/在线人数挪到最右，列已收缩为 Auto，不会挤压标题。
             Grid.SetColumn(BadgePanel, 2);
@@ -244,9 +274,11 @@ public partial class MainPage : ContentPage
             ButtonsPanel.Spacing = 8;
             SetCircleSize(SubtitleToggleButton, 48);
             SetCircleSize(FontSizeButton, 48);
+            SetCircleSize(BrightnessButton, 48);
             SetCircleSize(CompactPlayButton, 64);   // 竖屏隐藏，尺寸仅作占位
             SubtitleToggleLabel.FontSize = 18;
             FontSizeLabel.FontSize = 18;
+            BrightnessLabel.FontSize = 18;
 
             Grid.SetColumn(BadgePanel, 0);
             Grid.SetRow(BadgePanel, 0);
@@ -315,6 +347,29 @@ public partial class MainPage : ContentPage
     private void OnSubtitlesToggled(object? sender, TappedEventArgs e)
     {
         _vm.SubtitlesEnabled = !_vm.SubtitlesEnabled;
+    }
+
+    /// <summary>
+    /// 点击顶部「亮/柔/暗」按钮：循环切换整体显示亮度并持久化。
+    /// </summary>
+    private void OnBrightnessToggled(object? sender, TappedEventArgs e)
+    {
+        _brightnessLevelIndex = (_brightnessLevelIndex + 1) % BrightnessLevels.Length;
+        Preferences.Set(BrightnessPrefKey, _brightnessLevelIndex);
+        ApplyBrightness();
+    }
+
+    /// <summary>
+    /// 应用当前调光档位：按钮文字 + 整个界面的不透明度。
+    ///
+    /// 只改 RootGrid.Opacity：这是渲染属性，不触发测量/重排（字幕换行、行高、滚动位置全不受影响），
+    /// 也不会像覆盖层那样拦截点击 —— 按钮、字幕滚动在「暗」档下照常可点。
+    /// </summary>
+    private void ApplyBrightness()
+    {
+        var level = BrightnessLevels[_brightnessLevelIndex];
+        BrightnessLabel.Text = level.Label;
+        RootGrid.Opacity = level.Opacity;
     }
 
     /// <summary>

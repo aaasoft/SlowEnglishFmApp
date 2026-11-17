@@ -90,6 +90,24 @@
                     </Grid>
                 </Border>
                 <!--
+                    亮度切换按钮：循环 亮 / 柔 / 暗 三档，始终可见（调光与字幕无关）。
+                    夜间在车机上，高对比的白色字幕会刺眼；这里用一层全屏半透明黑遮罩
+                    把整个界面（字幕、标题、台标、播放键）一起压暗。
+                    不修改系统屏幕亮度，因此不影响其它应用，也不需要任何权限。
+                -->
+                <Border x:Name="BrightnessButton"
+                        WidthRequest="48" HeightRequest="48"
+                        StrokeShape="RoundRectangle 24" Stroke="Transparent"
+                        BackgroundColor="#232B36"
+                        VerticalOptions="Center">
+                    <Border.GestureRecognizers>
+                        <TapGestureRecognizer Tapped="OnBrightnessToggled" />
+                    </Border.GestureRecognizers>
+                    <Label x:Name="BrightnessLabel" Text="亮"
+                           TextColor="#D7DEE8" FontSize="18" FontAttributes="Bold"
+                           HorizontalOptions="Center" VerticalOptions="Center" />
+                </Border>
+                <!--
                     字幕开关按钮：默认关闭（纯听音频，不拉取逐词计时数据）。
                     开启时按钮变亮；字幕卡片与「字号」按钮只有在 ShowKaraoke（正在显示字幕）时才出现。
                     与字号按钮同为深色底圆形，避免误触蓝色播放键。
