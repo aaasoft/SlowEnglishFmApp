@@ -7,6 +7,7 @@ using Microsoft.Maui.Controls.Shapes;  // RoundRectangle（圆形按钮尺寸统
 using Microsoft.Maui.Devices;
 using Microsoft.Maui.Dispatching;   // IDispatcher.DispatchDelayed
 using Microsoft.Maui.Essentials;    // Preferences（字号档位持久化）
+using SlowEnglishFmApp.Services;
 using SlowEnglishFmApp.ViewModels;
 
 namespace SlowEnglishFmApp;
@@ -482,7 +483,13 @@ public partial class MainPage : ContentPage
         {
             // 节目信息来自后台轮询线程，改 BindableProperty 必须回到主线程。
             string title = _vm.ProgrammeTitle;
-            MainThread.BeginInvokeOnMainThread(() => _player.MetadataTitle = title);
+            MainThread.BeginInvokeOnMainThread(() =>
+            {
+                _player.MetadataTitle = title;
+                // MetadataTitle 只在赋 Source 时被工具包读取一次，直播流不断开源，
+                // 节目切换后系统媒体控制区还挂着开播时的标题 —— 这里原地刷新元数据。
+                MediaSessionMetadata.Update(_player, title, _player.MetadataArtist);
+            });
         }
     }
 
