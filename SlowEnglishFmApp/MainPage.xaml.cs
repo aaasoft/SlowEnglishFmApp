@@ -126,6 +126,12 @@ public partial class MainPage : ContentPage
 
         SizeChanged += (_, _) => ApplyLayoutMode();
 
+        // API 流量诊断：每 2 秒刷新一次底部指示器（只统计 App 的 HTTP，不含音频流）。
+        var trafficTimer = Dispatcher.CreateTimer();
+        trafficTimer.Interval = TimeSpan.FromSeconds(2);
+        trafficTimer.Tick += (_, _) => UpdateTrafficLabel();
+        trafficTimer.Start();
+
         // 恢复上次选择的字号档位（车机上默认 40 偏小，切到「中/大」后应一直生效）。
         // 此时字幕尚未创建，ApplyKaraokeFontSize 只会改共享样式，无副作用。
         double savedSize = Preferences.Get(FontSizePrefKey, KaraokeFontLevels[0].Size);
@@ -403,8 +409,26 @@ public partial class MainPage : ContentPage
         }
     }
 
-    private void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e)
+    // 流量诊断：上次采样时刻与累计字节数（2 秒窗口的速率由此算出）。
+    private long _lastTrafficBytes;
+    private DateTimeOffset _lastTrafficAt = DateTimeOffset.UtcNow;
+
+    /// <summary>
+    /// 刷新底部 API 流量指示器。只统计 App 发出的 HTTP（/api/live、live-clock、word-timings）；
+    /// 音频流走 MediaElement/ExoPlayer，不计入 —— 与系统流量速率对比即可定位大户。
+    /// </summary>
+    private void UpdateTrafficLabel()
     {
+        long total = Services.TrafficMonitor.TotalBytes;
+        double seconds = Math.Max(0.5, (DateTimeOffset.UtcNow - _lastTrafficAt).TotalSeconds);
+        double rate = (total - _lastTrafficBytes) / seconds;
+        _lastTrafficBytes = total;
+        _lastTrafficAt = DateTimeOffset.UtcNow;
+
+        TrafficLabel.Text = $"API ↓ {rate / 1024:F1} KB/s · 共 {total / 1048576.0:F1} MB";
+    }
+
+    private void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e)    {
         if (e.PropertyName == nameof(RadioViewModel.IsPlaying))
             HandlePlayState(_vm.IsPlaying);
         else if (e.PropertyName == nameof(RadioViewModel.ActiveWordIndex))
@@ -619,6 +643,10 @@ public partial class MainPage : ContentPage
 
     private void OnMediaStateChanged(object? sender, EventArgs e)
     {
+        // 流量诊断：Buffering/重复的 Playing↔Paused 是「播放器反复重开流」的直接信号
+        // （每次重开，服务端都会突发下发几百 KB，是 1MB/s 级流量的常见来源）。
+        System.Diagnostics.Debug.WriteLine($"[player] state={_player.CurrentState}");
+
         switch (_player.CurrentState)
         {
             case MediaElementState.Playing:

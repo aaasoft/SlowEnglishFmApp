@@ -748,6 +748,11 @@ public class RadioViewModel : INotifyPropertyChanged, IDisposable
                     _recalibrateNow = false;
                 });
                 backoff = TimeSpan.FromMilliseconds(500);
+
+                // 成功路径同样必须等待再进入下一轮：
+                // _clockCalibrated 要等主线程回调才置位，字幕显示时主线程繁忙、回调延迟，
+                // 若不等待，循环会在「已校准但标志未生效」的窗口里全速重发请求（热循环）。
+                if (!await DelayAsync(TimeSpan.FromSeconds(1), ct).ConfigureAwait(false)) break;
             }
             else
             {

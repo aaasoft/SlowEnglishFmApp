@@ -62,7 +62,7 @@ public sealed class TimingsService : ITimingsService
                 return null;
             }
 
-            using var doc = await JsonHttp.ReadAsync(response, cancellationToken).ConfigureAwait(false);
+            using var doc = await JsonHttp.ReadAsync(response, cancellationToken, url).ConfigureAwait(false);
             TimingFile? file = doc.RootElement.Deserialize<TimingFile>(JsonOptions);
 
             if (file?.Words is { Count: > 0 } words &&
