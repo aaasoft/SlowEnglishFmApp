@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+        App 主题：基于 Maui.SplashTheme（保留启动 splash 的 windowBackground），
+        显式声明系统状态栏/导航栏为页面底色 #0E1116。
+
+        背景：模板 colors.xml 的 colorPrimaryDark（原 #2B0B98 紫）被 AppCompat 用作
+        statusBarColor 默认值，MIUI 还会直接读 colorPrimaryDark 给状态栏着色，
+        于是打开 APP 后顶部一条紫带（实测状态栏像素与该值逐字节相同）。
+        两处都归到 #0E1116：本主题显式属性（标准 Android 用）+ colors.xml（MIUI 用）。
+
+        状态栏图标沿用浅色（默认 windowLightStatusBar=false，白图标压深底，对比正常）。
+    -->
+    <style name="AppTheme" parent="Maui.SplashTheme">
+        <item name="android:statusBarColor">#0E1116</item>
+        <item name="android:navigationBarColor">#0E1116</item>
+    </style>
+</resources>
